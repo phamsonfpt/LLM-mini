@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.env
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Data & Storage
+# Ignore data uploads and persistence storage
+data/*
+!data/.gitkeep
+storage/*
+!storage/.gitkeep
+qdrant/*
+!qdrant/.gitkeep
+uploads/*
+!uploads/.gitkeep
+
+# Executables and Heavy Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.eslintcache
+
+# Large Model Files
+*.gguf
+*.bin
+*.pt
+*.safetensors
+
+# System generated
+.DS_Store
+Thumbs.db
+
+# Logs and Checkpoints
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
