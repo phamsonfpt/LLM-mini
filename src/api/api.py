@@ -22,6 +22,10 @@ from src.llm.llm_client import LLMEngine
 from src.db.session_manager import SessionManager
 from src.learning.guide_generator import GuideGenerator
 from src.learning.podcast_generator import PodcastGenerator
+from src.retrieval.query_rewriter import QueryRewriter
+from src.retrieval.bm25_index import get_bm25_index, BM25Document, delete_bm25_folder
+import uuid
+from cachetools import TTLCache
 
 app = FastAPI(title="NotebookLM Mini API")
 
@@ -39,6 +43,21 @@ vector_store = None
 search_engine = None
 llm_engine = None
 session_manager = None
+query_rewriter = None
+
+# Cache LRU + TTL: Tối đa 200 câu hỏi, tự động xóa sau 60 phút (3600 giây) không truy cập
+_QUERY_CACHE = TTLCache(maxsize=200, ttl=3600)
+
+def clear_cache(notebook_id: str):
+    keys_to_delete = [k for k in _QUERY_CACHE.keys() if k.startswith(f"{notebook_id}_")]
+    for k in keys_to_delete:
+        del _QUERY_CACHE[k]
+
+def get_query_rewriter():
+    global query_rewriter
+    if query_rewriter is None:
+        query_rewriter = QueryRewriter()
+    return query_rewriter
 
 @app.on_event("startup")
 def startup_event():
@@ -91,6 +110,8 @@ def delete_notebook(notebook_id: str):
     session_manager.delete_notebook(notebook_id)
     store = get_vector_store()
     store.delete_notebook_chunks(notebook_id)
+    delete_bm25_folder(notebook_id)
+    clear_cache(notebook_id)
     return {"status": "success"}
 
 @app.get("/api/notebooks/{notebook_id}/documents")
@@ -102,15 +123,39 @@ def delete_document(notebook_id: str, filename: str):
     session_manager.delete_document(notebook_id, filename)
     store = get_vector_store()
     store.delete_document_chunks(notebook_id, filename)
+    
+    bm25_index = get_bm25_index(notebook_id)
+    bm25_index.remove_document(filename)
+    bm25_index.save()
+    
+    # Nếu thẻ không còn tài liệu nào → xóa Cẩm nang hồn ma
+    remaining_docs = session_manager.get_documents(notebook_id)
+    if len(remaining_docs) == 0:
+        session_manager.delete_study_guide(notebook_id)
+    
+    clear_cache(notebook_id)
     return {"status": "success"}
 
 @app.get("/api/notebooks/{notebook_id}/messages")
 def get_messages(notebook_id: str):
     return session_manager.get_chat_history(notebook_id)
 
+@app.delete("/api/notebooks/{notebook_id}/messages")
+def delete_messages(notebook_id: str):
+    """Xóa toàn bộ lịch sử chat của một Notebook."""
+    session_manager.delete_messages(notebook_id)
+    clear_cache(notebook_id)
+    return {"status": "success"}
+
 @app.get("/api/notebooks/{notebook_id}/study-guide")
 def get_study_guide(notebook_id: str):
     return session_manager.get_study_guide(notebook_id)
+
+@app.delete("/api/notebooks/{notebook_id}/study-guide")
+def delete_study_guide(notebook_id: str):
+    """Xóa Cẩm nang học tập của một Notebook."""
+    session_manager.delete_study_guide(notebook_id)
+    return {"status": "success"}
 
 class ChatRequest(BaseModel):
     query: str
@@ -133,13 +178,45 @@ async def chat_endpoint(request: ChatRequest):
         api_key = notebook.get('gemini_api_key')
         citations = []
         
+        # --- SMART CACHE: Chạy Query Rewriter TRƯỚC để chuẩn hóa câu hỏi ---
+        try:
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Đang phân tích và tối ưu câu hỏi...'})}\n\n"
+            rewriter = get_query_rewriter()
+            final_query = rewriter.rewrite(request.query)
+        except Exception:
+            final_query = request.query
+        
+        cache_key = f"{request.notebook_id}_{final_query}"
+        
+        # --- CHECK CACHE (dùng câu hỏi đã chuẩn hóa) ---
+        if cache_key in _QUERY_CACHE:
+            cached_data = _QUERY_CACHE[cache_key]
+            full_response = cached_data["response"]
+            citations = cached_data["citations"]
+            
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Đang lấy dữ liệu từ Cache...'})}\n\n"
+            if citations:
+                yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
+                
+            # Fake streaming for cached content
+            chunk_size = 20
+            import time
+            for i in range(0, len(full_response), chunk_size):
+                chunk = full_response[i:i+chunk_size]
+                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                time.sleep(0.02)
+            
+            yield f"data: {json.dumps({'type': 'status', 'message': ''})}\n\n"
+            session_manager.save_message(request.notebook_id, "assistant", full_response, citations=citations)
+            return
+            
         try:
             # Gửi status: Đang tìm kiếm
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Đang tìm kiếm dữ liệu trong Sổ tay...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Đang tìm kiếm dữ liệu cho: {final_query}'})}\n\n"
             
             # 1. Truy xuất dữ liệu (Retrieval)
             engine = get_search_engine()
-            context_str, results = engine.retrieve(request.query, notebook_id=request.notebook_id)
+            context_str, results = engine.retrieve(final_query, notebook_id=request.notebook_id)
             
             # Gửi status: Phân tích
             yield f"data: {json.dumps({'type': 'status', 'message': 'Đang đọc và phân tích ngữ cảnh...'})}\n\n"
@@ -153,9 +230,14 @@ async def chat_endpoint(request: ChatRequest):
             if citations:
                 yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
 
+            # --- Lấy lịch sử chat ---
+            raw_history = session_manager.get_chat_history(request.notebook_id)
+            # Không lấy câu hỏi cuối vì nó chính là request.query vừa mới được save ở trên
+            history = raw_history[:-1] if len(raw_history) > 0 else []
+
             # 2. Xây dựng Prompt
             llm = get_llm_engine()
-            rag_prompt = llm.build_rag_prompt(request.query, context_str)
+            rag_prompt = llm.build_rag_prompt(final_query, context_str, history=history)
             system_prompt = "Bạn là một trợ lý ảo thông minh. Hãy trả lời câu hỏi dựa trên tài liệu được cung cấp."
             
             # Gửi status: Gọi AI
@@ -169,6 +251,12 @@ async def chat_endpoint(request: ChatRequest):
             # Xóa status khi hoàn thành
             yield f"data: {json.dumps({'type': 'status', 'message': ''})}\n\n"
             
+            # --- LƯU CACHE ---
+            _QUERY_CACHE[cache_key] = {
+                "response": full_response,
+                "citations": citations
+            }
+            
         except Exception as e:
             yield f"data: {json.dumps({'type': 'chunk', 'text': f'Lỗi hệ thống: {e}'})}\n\n"
         finally:
@@ -179,6 +267,23 @@ async def chat_endpoint(request: ChatRequest):
         stream_and_save(),
         media_type="text/event-stream"
     )
+
+def _index_all_chunks(notebook_id: str, chunks: list):
+    # Vector Indexing
+    store = get_vector_store()
+    store.index_chunks(chunks)
+    
+    # BM25 Indexing
+    bm25_index = get_bm25_index(notebook_id)
+    bm25_docs = [
+        BM25Document(
+            chunk_id=chunk["metadata"].get("chunk_id", str(uuid.uuid4())),
+            text=chunk["content"],
+            metadata=chunk["metadata"]
+        ) for chunk in chunks
+    ]
+    bm25_index.add_documents(bm25_docs)
+    bm25_index.save()
 
 @app.post("/api/ingest/url")
 async def ingest_url(background_tasks: BackgroundTasks, notebook_id: str = Form(...), url: str = Form(...)):
@@ -195,8 +300,7 @@ async def ingest_url(background_tasks: BackgroundTasks, notebook_id: str = Form(
         chunk["metadata"]["notebook_id"] = notebook_id
         chunk["metadata"]["filename"] = filename
     
-    store = get_vector_store()
-    store.index_chunks(chunks)
+    _index_all_chunks(notebook_id, chunks)
     
     session_manager.add_document(notebook_id, filename)
     
@@ -216,6 +320,7 @@ async def ingest_url(background_tasks: BackgroundTasks, notebook_id: str = Form(
         gemini_api_key=api_key
     )
     
+    clear_cache(notebook_id)
     return {"status": "success", "chunks_indexed": len(chunks)}
 
 @app.post("/api/ingest/upload")
@@ -234,10 +339,19 @@ async def upload_file(
     if file.filename.lower().endswith(('.mp3', '.wav', '.flac', '.ogg', '.m4a')):
         from src.ingestion.parsers.audio_parser import AudioParser
         parser = AudioParser()
+        tree = parser.parse(file_path)
+    elif file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
+        from src.ingestion.parsers.image_parser import ImageParser
+        parser = ImageParser()
+        tree = parser.parse(file_path)
+    elif file.filename.lower().endswith(('.md', '.markdown')):
+        from src.ingestion.parsers.markdown_parser import MarkdownParser
+        parser = MarkdownParser()
+        with open(file_path, "r", encoding="utf-8") as f:
+            tree = parser.parse(f.read())
     else:
         parser = MarkItDownParser()
-        
-    tree = parser.parse(file_path)
+        tree = parser.parse(file_path)
     
     tree.metadata["notebook_id"] = notebook_id
     
@@ -248,8 +362,7 @@ async def upload_file(
         chunk["metadata"]["notebook_id"] = notebook_id
         chunk["metadata"]["filename"] = file.filename
     
-    store = get_vector_store()
-    store.index_chunks(chunks)
+    _index_all_chunks(notebook_id, chunks)
     
     session_manager.add_document(notebook_id, file.filename)
     
@@ -269,6 +382,7 @@ async def upload_file(
         gemini_api_key=api_key
     )
     
+    clear_cache(notebook_id)
     return {"status": "success", "chunks_indexed": len(chunks)}
 
 @app.post("/api/podcast/generate")

@@ -115,11 +115,22 @@ class LLMEngine:
             logger.error(f"Lỗi không xác định khi gọi Local LLM: {e}")
             yield "Đã có lỗi xảy ra trong quá trình sinh văn bản từ AI nội bộ."
 
-    def build_rag_prompt(self, query: str, context: str) -> str:
-        """Tạo Prompt hoàn chỉnh cho RAG."""
-        return (
+    def build_rag_prompt(self, query: str, context: str, history: list = None) -> str:
+        """Tạo Prompt hoàn chỉnh cho RAG có bao gồm Lịch sử Chat."""
+        prompt = (
             f"Bạn là trợ lý AI chuyên nghiệp tên là NotebookLM Mini. Dưới đây là các thông tin tôi tìm thấy trong tài liệu của bạn:\n"
             f"====================\n{context}\n====================\n\n"
-            f"Dựa KHÔNG CHỈ vào trí nhớ mà HÃY DỰA VÀO thông tin trên, hãy trả lời câu hỏi sau một cách chi tiết và chính xác nhất. Nếu tài liệu không có thông tin, hãy nói rõ là tài liệu không đề cập.\n"
-            f"Câu hỏi: {query}"
         )
+        
+        if history and len(history) > 0:
+            prompt += "Đây là lịch sử trò chuyện gần đây (để làm ngữ cảnh):\n"
+            for msg in history[-5:]: # Chỉ lấy 5 tin nhắn gần nhất
+                role = "User" if msg['role'] == 'user' else "AI"
+                prompt += f"{role}: {msg['content']}\n"
+            prompt += "\n"
+            
+        prompt += (
+            f"Dựa KHÔNG CHỈ vào trí nhớ mà HÃY DỰA VÀO thông tin trên và ngữ cảnh trò chuyện, hãy trả lời câu hỏi sau một cách chi tiết và chính xác nhất. Nếu tài liệu không có thông tin, hãy nói rõ là tài liệu không đề cập.\n"
+            f"Câu hỏi mới: {query}"
+        )
+        return prompt
