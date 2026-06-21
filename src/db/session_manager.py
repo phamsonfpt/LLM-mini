@@ -206,3 +206,15 @@ class SessionManager:
                     "flashcards": flashcards_data
                 }
             return None
+
+    def delete_study_guide(self, notebook_id: str):
+        """Xóa Cẩm nang học tập của một Notebook."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM study_guides WHERE notebook_id = ?", (notebook_id,))
+            conn.commit()
+
+    def delete_messages(self, notebook_id: str):
+        """Xóa toàn bộ lịch sử chat của một Notebook."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM messages WHERE notebook_id = ?", (notebook_id,))
+            conn.commit()

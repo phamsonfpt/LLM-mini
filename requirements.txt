@@ -56,3 +56,6 @@ pytesseract>=0.3.10
 Pillow>=10.2.0
 cachetools>=5.3.3
 google-genai>=0.1.0
+
+# PDF Image Extraction
+PyMuPDF>=1.24.0
