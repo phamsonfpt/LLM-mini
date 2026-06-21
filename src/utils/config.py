@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from typing import Literal, Optional
 from functools import lru_cache
 from pydantic import Field, model_validator
@@ -72,8 +72,10 @@ class Settings(BaseSettings):
     # --- NEW: Hybrid Search & Reranking ---
     hybrid_initial_k: int = Field(default=15, ge=1, le=100)
     hybrid_rerank_k: int = Field(default=5, ge=1, le=50)
+    use_reranker: bool = True
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     bm25_top_k: int = Field(default=15, ge=1, le=100)
+    ollama_base_url: str = "http://localhost:11434"
 
     # --- NEW: Stream Batching ---
     stream_buffer_ms: int = Field(default=50, ge=10, le=500)
@@ -96,12 +98,15 @@ class Settings(BaseSettings):
             raise ValueError("hybrid_rerank_k must be <= hybrid_initial_k.")
             
         if self.hf_device == "auto":
-            import torch
-            if torch.cuda.is_available():
-                self.hf_device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                self.hf_device = "mps"
-            else:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    self.hf_device = "cuda"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    self.hf_device = "mps"
+                else:
+                    self.hf_device = "cpu"
+            except ImportError:
                 self.hf_device = "cpu"
                 
         return self
