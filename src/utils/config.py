@@ -23,28 +23,21 @@ class Settings(BaseSettings):
     top_k: int = Field(default=5, ge=1, le=64)
 
     # Embedding Configuration
-    embedding_model: str = "GreenNode/GreenNode-Embedding-Large-VN-Mixed-V1"
+    embedding_model: str = Field(default="GreenNode/GreenNode-Embedding-Large-VN-Mixed-V1", alias="RAG_EMBEDDING_MODEL")
+    hf_device: str = "auto"
+    
+    # Vision & Audio Configuration
+    vision_mode: str = Field(default="ocr", alias="RAG_VISION_MODE")
+    vision_model: str = Field(default="", alias="RAG_VISION_MODEL")
+    audio_model: str = Field(default="", alias="RAG_AUDIO_MODEL")
 
     # LLM Providers Configuration
-    llm_provider: Literal["hf_local", "gemini", "vllm"] = "hf_local"
+    llm_provider: Literal["hf_local", "gemini"] = "hf_local"
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
-
-    # Local Hugging Face Model Parameters
-    hf_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
-    hf_device: str = "auto"  # Supports 'auto', 'cpu', 'cuda', 'mps' etc.
-    hf_max_new_tokens: int = Field(default=2048, ge=1)
-    
-    # --- NEW: GGUF Model Parameters (Llama.cpp) ---
-    gguf_model_repo: str = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-    gguf_model_file: str = "qwen2.5-3b-instruct-q4_k_m.gguf"
 
     # Google Gemini API Config
     gemini_model: str = "gemini-2.5-flash"
     google_api_key: str | None = Field(default=None, validation_alias="GOOGLE_API_KEY")
-
-    # OpenAI / vLLM Config
-    vllm_api_base: str = "http://localhost:8001/v1"
-    vllm_api_key: str = "EMPTY"
 
     # Learning Parameters
     summarize_batch_size: int = Field(default=10, ge=1)
@@ -69,7 +62,7 @@ class Settings(BaseSettings):
     hybrid_initial_k: int = Field(default=15, ge=1, le=100)
     hybrid_rerank_k: int = Field(default=5, ge=1, le=50)
     use_reranker: bool = True
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_model: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RAG_RERANKER_MODEL")
     bm25_top_k: int = Field(default=15, ge=1, le=100)
     llama_server_url: str = "http://127.0.0.1:8080"
 
@@ -92,18 +85,6 @@ class Settings(BaseSettings):
             pass
         if self.hybrid_rerank_k > self.hybrid_initial_k:
             raise ValueError("hybrid_rerank_k must be <= hybrid_initial_k.")
-            
-        if self.hf_device == "auto":
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    self.hf_device = "cuda"
-                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                    self.hf_device = "mps"
-                else:
-                    self.hf_device = "cpu"
-            except ImportError:
-                self.hf_device = "cpu"
                 
         return self
 

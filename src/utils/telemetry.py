@@ -51,7 +51,7 @@ def trace_execution(event_name: str, module: str):
                 
                 log_data = {
                     "event": event_name,
-                    "module": module,
+                    "app_module": module,
                     "latency_ms": latency_ms,
                     "ram_diff_mb": round(end_resources["ram_mb"] - start_resources["ram_mb"], 2)
                 }
@@ -89,7 +89,7 @@ def trace_execution_generator(event_name: str, module: str):
                 
                 log_data = {
                     "event": event_name,
-                    "module": module,
+                    "app_module": module,
                     "latency_ms": latency_ms,
                 }
                 

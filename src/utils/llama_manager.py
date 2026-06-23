@@ -38,7 +38,7 @@ class LlamaManager:
                 return f"{LLAMA_CPP_BASE_URL}/llama-{LLAMA_CPP_VERSION}-bin-macos-x64.zip"
         elif self.is_windows:
             if has_cuda:
-                return f"{LLAMA_CPP_BASE_URL}/llama-{LLAMA_CPP_VERSION}-bin-win-cudart-cu12.2-x64.zip"
+                return f"{LLAMA_CPP_BASE_URL}/llama-{LLAMA_CPP_VERSION}-bin-win-cuda-cu12.4-x64.zip"
             elif has_vulkan:
                 return f"{LLAMA_CPP_BASE_URL}/llama-{LLAMA_CPP_VERSION}-bin-win-vulkan-x64.zip"
             else:

@@ -2,12 +2,29 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 from ..utils.config import settings
 
+def _resolve_device(device_str: str) -> str:
+    """Tự động phát hiện GPU nếu device='auto' và bảo vệ chống tràn VRAM."""
+    if device_str == "auto":
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # Lấy tổng dung lượng VRAM của GPU 0 (tính bằng GB)
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                # Nếu VRAM <= 6GB, ưu tiên nhường VRAM cho LLM, đẩy Embedding về CPU
+                if vram_gb <= 6.0:
+                    return "cpu"
+                return "cuda"
+            return "cpu"
+        except ImportError:
+            return "cpu"
+    return device_str
+
 class LocalEmbedder:
     """Quản lý Embedding Model với khả năng tự động chọn Device theo Hardware Profiler."""
     
     def __init__(self, model_name: str = None):
         self.model_name = model_name or getattr(settings, "embedding_model", "keepitreal/vietnamese-sbert")
-        self.device = settings.hf_device if settings.hf_device != "auto" else None
+        self.device = _resolve_device(settings.hf_device)
         
         print(f"[LocalEmbedder] Đang tải mô hình {self.model_name} lên thiết bị: {self.device}")
         

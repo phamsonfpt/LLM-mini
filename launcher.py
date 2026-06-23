@@ -72,6 +72,32 @@ def main():
     print("\n[Launcher] Đang cài đặt các thư viện cần thiết...")
     subprocess.run([uv_exe, "pip", "install", "-r", "requirements.txt"], check=True)
     
+    # --- Cấu hình FFmpeg ---
+    print("\n[Launcher] Đang cấu hình FFmpeg...")
+    is_win = platform.system() == "Windows"
+    python_exe = os.path.join(".venv", "Scripts", "python.exe") if is_win else os.path.join(".venv", "bin", "python")
+    try:
+        ffmpeg_cmd = [python_exe, "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"]
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+        ffmpeg_exe = result.stdout.strip()
+        if ffmpeg_exe and os.path.exists(ffmpeg_exe):
+            import shutil
+            bin_dir = os.path.abspath("bin")
+            target_ffmpeg = os.path.join(bin_dir, "ffmpeg.exe" if is_win else "ffmpeg")
+            if not os.path.exists(target_ffmpeg):
+                shutil.copy2(ffmpeg_exe, target_ffmpeg)
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+            print(f"[Launcher] Đã cập nhật PATH với FFmpeg: {bin_dir}")
+    except Exception as e:
+        print(f"[Launcher] Cảnh báo: Không thể nạp FFmpeg tự động ({e})")
+        
+    # --- Preload Core AI Models ---
+    print("\n[Launcher] Đang tải trước các mô hình cốt lõi (Embedding, Reranker)...")
+    try:
+        subprocess.run([python_exe, "-m", "src.utils.preload"], check=True)
+    except Exception as e:
+        print(f"[Launcher] Lỗi khi tải mô hình cốt lõi: {e}")
+    
     # 3. Chạy llama-server ngầm
     print("\n[Launcher] Đang khởi động AI Engine (llama.cpp)...")
     llama_exe = config["server_exe"]
@@ -94,8 +120,17 @@ def main():
     backend_process = subprocess.Popen(backend_cmd)
     
     # 5. Mở trình duyệt
+    print("\n[Launcher] Đang chờ Backend Server sẵn sàng...")
+    import urllib.error
+    max_retries = 60
+    for _ in range(max_retries):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:8000", timeout=1)
+            break
+        except urllib.error.URLError:
+            time.sleep(1)
+            
     print("\n[Launcher] Hoàn tất! Đang mở giao diện trên trình duyệt...")
-    time.sleep(3)
     webbrowser.open("http://127.0.0.1:8000")
     
     print("\n[INFO] Nhấn Ctrl+C để tắt toàn bộ hệ thống.")

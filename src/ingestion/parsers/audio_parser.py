@@ -19,7 +19,9 @@ class AudioParser:
                 # Suppress FP16 warning on CPU
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    self.model = whisper.load_model(self.model_size)
+                    cache_dir = os.path.join(os.getcwd(), "cache", "whisper")
+                    os.makedirs(cache_dir, exist_ok=True)
+                    self.model = whisper.load_model(self.model_size, download_root=cache_dir)
             except ImportError:
                 raise ImportError("Thư viện openai-whisper chưa được cài đặt. Chạy lệnh: pip install openai-whisper")
             except Exception as e:

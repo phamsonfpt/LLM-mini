@@ -5,6 +5,7 @@ import requests
 import logging
 from typing import Generator, Optional
 from src.utils.config import settings
+from src.utils.telemetry import trace_execution_generator
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,10 @@ class LLMEngine:
                     model='gemini-2.5-flash',
                     contents=[
                         types.Content(role="user", parts=[types.Part.from_text(text=system_prompt + "\n\n" + prompt)])
-                    ]
+                    ],
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                    )
                 )
                 for chunk in response:
                     yield chunk.text

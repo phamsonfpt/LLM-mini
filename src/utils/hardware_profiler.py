@@ -5,8 +5,9 @@ import sys
 import os
 import shutil
 
-# Ép HuggingFace tải Cache vào ổ D thay vì ổ C
+# Ép HuggingFace tải Cache vào ổ D thay vì ổ C và cấm kết nối Internet
 os.environ["HF_HOME"] = os.path.join(os.getcwd(), "cache", "huggingface")
+# os.environ["HF_HUB_OFFLINE"] = "1" # Bỏ comment nếu muốn ép offline
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -87,6 +88,61 @@ class ModelZooManager:
             else:
                 print("⚠️ Lựa chọn không hợp lệ, vui lòng nhập lại!")
 
+        # LỰA CHỌN EMBEDDING MODEL
+        print("\n📚 LỰA CHỌN MÔ HÌNH NHÚNG (EMBEDDING)")
+        print(" Hệ thống cần một mô hình để đọc và tìm kiếm văn bản của bạn:")
+        print("  [1] GreenNode-Embedding-Large (Nặng ~1.2GB) - Siêu chính xác | Khuyên dùng nếu RAM > 8GB")
+        print("  [2] Vietnamese-sBERT (Nhẹ ~100MB)           - Khá chính xác  | Chạy mượt trên mọi máy")
+        
+        while True:
+            choice_emb = input("👉 Nhập lựa chọn của bạn (1-2) [Mặc định: 1]: ").strip()
+            if not choice_emb: choice_emb = "1"
+            
+            if choice_emb in ["1", "2"]:
+                break
+            else:
+                print("⚠️ Lựa chọn không hợp lệ, vui lòng nhập lại!")
+                
+        embedding_model = "GreenNode/GreenNode-Embedding-Large-VN-Mixed-V1" if choice_emb == "1" else "keepitreal/vietnamese-sbert"
+        
+        # LỰA CHỌN RERANKER MODEL
+        print("\n🔍 LỰA CHỌN MÔ HÌNH CHẤM ĐIỂM (RERANKER)")
+        print(" Giúp AI lọc ra kết quả tìm kiếm chính xác nhất trước khi trả lời:")
+        print("  [1] BGE-Reranker-v2-m3 (Nặng ~1.1GB)     - Chuẩn xác | Khuyên dùng nếu RAM > 8GB")
+        print("  [2] mMiniLMv2-L12-H384 (Nhẹ ~130MB)      - Vừa đủ xài| Chạy mượt trên mọi máy")
+        
+        while True:
+            choice_reranker = input("👉 Nhập lựa chọn của bạn (1-2) [Mặc định: 1]: ").strip()
+            if not choice_reranker: choice_reranker = "1"
+            
+            if choice_reranker in ["1", "2"]:
+                break
+            else:
+                print("⚠️ Lựa chọn không hợp lệ, vui lòng nhập lại!")
+                
+        reranker_model = "BAAI/bge-reranker-v2-m3" if choice_reranker == "1" else "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+
+        # Ghi cấu hình vào .env
+        env_path = os.path.join(os.getcwd(), ".env")
+        env_content = ""
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                env_content = f.read()
+                
+        import re
+        if "RAG_EMBEDDING_MODEL" in env_content:
+            env_content = re.sub(r'RAG_EMBEDDING_MODEL=.*', f'RAG_EMBEDDING_MODEL={embedding_model}', env_content)
+        else:
+            env_content += f"\nRAG_EMBEDDING_MODEL={embedding_model}\n"
+            
+        if "RAG_RERANKER_MODEL" in env_content:
+            env_content = re.sub(r'RAG_RERANKER_MODEL=.*', f'RAG_RERANKER_MODEL={reranker_model}', env_content)
+        else:
+            env_content += f"RAG_RERANKER_MODEL={reranker_model}\n"
+            
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(env_content)
+
         print("\n⏳ Đang tiến hành thiết lập hệ thống theo yêu cầu của bạn...")
         
         # 1. Sinh file requirements.txt
@@ -120,7 +176,7 @@ class ModelZooManager:
             
         # 2. Cài đặt llama.cpp và Model
         llama = LlamaManager()
-        server_exe = llama.setup_llama_server(has_cuda=self.has_cuda)
+        server_exe = llama.setup_llama_server(has_cuda=False, has_vulkan=self.has_cuda)
         model_path = llama.download_model(selected_model["repo"], selected_model["file"])
         
         print("✅ Đã tạo cấu hình và tải AI engine hoàn tất!")

@@ -23,13 +23,23 @@ def _load_cross_encoder():
     model_name = settings.reranker_model
     if settings.low_vram_mode:
         model_name = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    
+    # Tự động phát hiện GPU và bảo vệ VRAM
+    device = settings.hf_device
+    if device == "auto":
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            # Dưới 6GB VRAM thì nhường cho LLM, đẩy Reranker về CPU
+            device = "cuda" if vram_gb > 6.0 else "cpu"
+        else:
+            device = "cpu"
         
-    logger.info(f"Loading Cross-Encoder model: {model_name} ...")
+    logger.info(f"Loading Cross-Encoder model: {model_name} on {device}...")
     try:
         model = CrossEncoder(
             model_name,
-            device=settings.hf_device,
-            model_kwargs={"torch_dtype": torch.float16 if settings.hf_device != "cpu" else torch.float32}
+            device=device,
+            model_kwargs={"torch_dtype": torch.float16 if device != "cpu" else torch.float32}
         )
         logger.info("Cross-Encoder loaded successfully.")
         return model

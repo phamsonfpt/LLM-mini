@@ -14,6 +14,7 @@ from typing import Optional, List
 from fastapi.responses import HTMLResponse
 from src.utils.telemetry import get_system_resources
 from src.utils.logger import app_logger
+from src.utils.telemetry import trace_execution
 
 from src.ingestion.parsers.markitdown_parser import MarkItDownParser
 from src.ingestion.parsers.web_parser import WebParser
@@ -30,6 +31,15 @@ from src.retrieval.bm25_index import get_bm25_index, BM25Document, delete_bm25_f
 from src.retrieval.semantic_router import get_semantic_router
 import uuid
 from cachetools import TTLCache
+
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    import pydub
+    import imageio_ffmpeg
+    pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    pass
 
 app = FastAPI(title="NotebookLM Mini API")
 
@@ -179,9 +189,11 @@ def delete_study_guide(notebook_id: str):
     session_manager.delete_study_guide(notebook_id)
     return {"status": "success"}
 
+
 class ChatRequest(BaseModel):
     query: str
     notebook_id: str
+    mode: str = "normal"
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
@@ -200,13 +212,24 @@ async def chat_endpoint(request: ChatRequest):
         api_key = notebook.get('gemini_api_key')
         citations = []
         
-        # --- SMART CACHE: Chạy Query Rewriter TRƯỚC để chuẩn hóa câu hỏi ---
-        try:
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Đang phân tích và tối ưu câu hỏi...'})}\n\n"
-            rewriter = get_query_rewriter()
-            final_query = rewriter.rewrite(request.query)
-        except Exception:
-            final_query = request.query
+        # --- PRE-ROUTING (Định tuyến lần 1 - Tốc độ cao) ---
+        router = get_semantic_router()
+        intent = router.route(request.query)
+        
+        final_query = request.query
+        if intent != "chitchat":
+            # --- SMART CACHE: Chạy Query Rewriter để sửa lỗi chính tả ---
+            try:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Đang phân tích và tối ưu câu hỏi...'})}\n\n"
+                rewriter = get_query_rewriter()
+                final_query = rewriter.rewrite(request.query)
+                
+                # --- RE-ROUTING (Định tuyến lần 2 - Sau khi sửa lỗi) ---
+                if final_query != request.query:
+                    intent = router.route(final_query)
+                    
+            except Exception:
+                pass
         
         cache_key = f"{request.notebook_id}_{final_query}"
         
@@ -233,10 +256,6 @@ async def chat_endpoint(request: ChatRequest):
             return
             
         try:
-            # --- INTELLIGENT QUERY ROUTER ---
-            router = get_semantic_router()
-            intent = router.route(final_query)
-            
             if intent == "chitchat":
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Đang suy nghĩ câu trả lời...'})}\n\n"
                 context_str = ""
@@ -271,6 +290,9 @@ async def chat_endpoint(request: ChatRequest):
             llm = get_llm_engine()
             rag_prompt = llm.build_rag_prompt(final_query, context_str, history=history)
             system_prompt = "Bạn là một trợ lý ảo thông minh. Hãy trả lời câu hỏi dựa trên tài liệu được cung cấp."
+            if request.mode == "escape-room":
+                system_prompt = "Bạn là Jigsaw - một Quản Trò (Game Master) đáng sợ trong một trò chơi sinh tồn Escape Room. Bạn đã nhốt người chơi vào một căn phòng ảo. Dựa vào tài liệu được cung cấp, hãy nghĩ ra MỘT câu đố liên quan đến kiến thức trong tài liệu và yêu cầu người chơi giải nó để mở khóa thoát hiểm. Giọng điệu của bạn phải bí ẩn, u ám và có chút đe dọa. KHÔNG trả lời thẳng câu hỏi của người chơi, chỉ đưa ra manh mối và bắt họ giải đố."
+
             
             # Gửi status: Gọi AI
             yield f"data: {json.dumps({'type': 'status', 'message': 'AI đang suy nghĩ câu trả lời...'})}\n\n"
@@ -430,7 +452,7 @@ async def upload_file(
     return {"status": "success", "message": "File is processing in background"}
 
 @app.post("/api/podcast/generate")
-async def generate_podcast(background_tasks: BackgroundTasks, notebook_id: str = Form(...)):
+async def generate_podcast(background_tasks: BackgroundTasks, notebook_id: str = Form(...), style: str = Form("normal")):
     notebook = session_manager.get_notebook(notebook_id)
     is_private = notebook.get('is_private', True) if notebook else True
     api_key = notebook.get('gemini_api_key') if notebook else None
@@ -441,9 +463,56 @@ async def generate_podcast(background_tasks: BackgroundTasks, notebook_id: str =
         generator.generate_podcast, 
         notebook_id,
         is_private=is_private,
+        style=style,
         gemini_api_key=api_key
     )
     return {"status": "processing"}
+
+# --- GAMIFICATION PHASE 2 ENDPOINTS ---
+
+class AddExpRequest(BaseModel):
+    amount: int
+
+@app.post("/api/notebooks/{notebook_id}/add-exp")
+async def add_exp(notebook_id: str, req: AddExpRequest):
+    result = session_manager.add_exp(notebook_id, req.amount)
+    return result
+
+class UnlockSkillRequest(BaseModel):
+    skill_id: str
+    cost: int
+
+@app.post("/api/notebooks/{notebook_id}/unlock-skill")
+async def unlock_skill(notebook_id: str, req: UnlockSkillRequest):
+    success = session_manager.unlock_skill(notebook_id, req.skill_id, req.cost)
+    if success:
+        return {"status": "success", "message": f"Unlocked {req.skill_id}"}
+    raise HTTPException(status_code=400, detail="Not enough SP or notebook not found")
+
+@app.get("/api/notebooks/{notebook_id}/skills")
+async def get_skills(notebook_id: str):
+    return session_manager.get_unlocked_skills(notebook_id)
+
+@app.get("/api/leaderboard")
+async def get_leaderboard():
+    real_users = session_manager.get_leaderboard()
+    
+    # Fake bots to simulate competition
+    bots = [
+        {"id": "bot_1", "title": "🤖 Bé Lệ (AI)", "level": 5, "exp": 250},
+        {"id": "bot_2", "title": "🤖 Giáo Sư X", "level": 12, "exp": 80},
+        {"id": "bot_3", "title": "🤖 Tiến Sĩ Phét", "level": 20, "exp": 1500}
+    ]
+    
+    combined = real_users + bots
+    # Sort by level DESC, exp DESC
+    combined.sort(key=lambda x: (x["level"], x["exp"]), reverse=True)
+    
+    # Assign ranks
+    for i, user in enumerate(combined):
+        user["rank"] = i + 1
+        
+    return combined
 
 @app.post("/api/evaluate")
 async def evaluate_knowledge(notebook_id: str = Form(...)):
@@ -513,6 +582,163 @@ def serve_monitoring():
         with open(html_path, "r", encoding="utf-8") as f:
             return f.read()
     return "Dashboard HTML not found."
+
+# --- CUSTOM GENERATION ENDPOINTS ---
+class CustomQuizRequest(BaseModel):
+    amount: int = 5
+    difficulty: str = "Trung bình (Mặc định)"
+    topic: str = ""
+    language: str = "Tiếng Việt"
+
+@app.post("/api/notebooks/{notebook_id}/quiz/custom")
+def generate_custom_quiz(notebook_id: str, req: CustomQuizRequest):
+    nb = session_manager.get_notebook(notebook_id)
+    if not nb: raise HTTPException(status_code=404)
+    engine = get_search_engine()
+    context_str, _ = engine.retrieve("tổng hợp toàn bộ ý chính " + req.topic, notebook_id=notebook_id, top_k=30)
+    llm = get_llm_engine()
+    guide_gen = GuideGenerator(llm, session_manager)
+    result = guide_gen.generate_custom_quiz(notebook_id, context_str, req.topic, req.difficulty, req.amount, req.language, nb.get('is_private', True), nb.get('gemini_api_key'))
+    # Update DB
+    guide = session_manager.get_study_guide(notebook_id) or {}
+    session_manager.save_study_guide(notebook_id, guide.get('summary', ''), guide.get('faq', ''), guide.get('glossary', ''), quiz=result, flashcards=guide.get('flashcards', ''), mindmap=guide.get('mindmap', ''))
+    return {"status": "success", "quiz": result}
+
+class CustomFlashcardRequest(BaseModel):
+    amount: int = 5
+    difficulty: str = "Trung bình (Mặc định)"
+    topic: str = ""
+    language: str = "Tiếng Việt"
+
+@app.post("/api/notebooks/{notebook_id}/flashcards/custom")
+def generate_custom_flashcards(notebook_id: str, req: CustomFlashcardRequest):
+    nb = session_manager.get_notebook(notebook_id)
+    if not nb: raise HTTPException(status_code=404)
+    engine = get_search_engine()
+    context_str, _ = engine.retrieve("tổng hợp toàn bộ ý chính " + req.topic, notebook_id=notebook_id, top_k=30)
+    llm = get_llm_engine()
+    guide_gen = GuideGenerator(llm, session_manager)
+    result = guide_gen.generate_custom_flashcards(notebook_id, context_str, req.topic, req.difficulty, req.amount, req.language, nb.get('is_private', True), nb.get('gemini_api_key'))
+    # Update DB
+    guide = session_manager.get_study_guide(notebook_id) or {}
+    session_manager.save_study_guide(notebook_id, guide.get('summary', ''), guide.get('faq', ''), guide.get('glossary', ''), quiz=guide.get('quiz', ''), flashcards=result, mindmap=guide.get('mindmap', ''))
+    return {"status": "success", "flashcards": result}
+
+class CustomMindmapRequest(BaseModel):
+    topic: str = ""
+
+@app.post("/api/notebooks/{notebook_id}/mindmap/custom")
+def generate_custom_mindmap(notebook_id: str, req: CustomMindmapRequest):
+    nb = session_manager.get_notebook(notebook_id)
+    if not nb: raise HTTPException(status_code=404)
+    engine = get_search_engine()
+    context_str, _ = engine.retrieve("tổng hợp toàn bộ ý chính " + req.topic, notebook_id=notebook_id, top_k=30)
+    llm = get_llm_engine()
+    guide_gen = GuideGenerator(llm, session_manager)
+    result = guide_gen.generate_custom_mindmap(notebook_id, context_str, req.topic, nb.get('is_private', True), nb.get('gemini_api_key'))
+    guide = session_manager.get_study_guide(notebook_id) or {}
+    session_manager.save_study_guide(notebook_id, guide.get('summary', ''), guide.get('faq', ''), guide.get('glossary', ''), quiz=guide.get('quiz', ''), flashcards=guide.get('flashcards', ''), mindmap=result)
+    return {"status": "success", "mindmap": result}
+
+class CustomPodcastRequest(BaseModel):
+    topic: str = ""
+    language: str = "Tiếng Việt"
+
+@app.post("/api/notebooks/{notebook_id}/podcast/custom")
+def generate_custom_podcast_api(notebook_id: str, req: CustomPodcastRequest):
+    nb = session_manager.get_notebook(notebook_id)
+    if not nb: raise HTTPException(status_code=404)
+    engine = get_search_engine()
+    context_str, _ = engine.retrieve("tổng hợp toàn bộ ý chính " + req.topic, notebook_id=notebook_id, top_k=30)
+    llm = get_llm_engine()
+    pod_gen = PodcastGenerator(llm, session_manager)
+    audio_url = pod_gen.generate_custom_podcast(notebook_id, context_str, req.topic, req.language, nb.get('is_private', True), nb.get('gemini_api_key'))
+    return {"status": "success", "audio_url": audio_url}
+
+# --- SYSTEM MODEL CONFIGURATION ENDPOINTS ---
+class SetupModelRequest(BaseModel):
+    type: str  # "vision" hoặc "audio"
+    model_name: str # Tên model
+
+@app.get("/api/system/models-status")
+def get_models_status():
+    from src.utils.config import settings
+    return {
+        "vision_configured": bool(settings.vision_model) or settings.vision_mode == "ocr",
+        "vision_mode": settings.vision_mode,
+        "vision_model": settings.vision_model,
+        "audio_configured": bool(settings.audio_model),
+        "audio_model": settings.audio_model
+    }
+
+@app.post("/api/system/setup-model")
+def setup_system_model(req: SetupModelRequest):
+    import os
+    import re
+    from src.utils.config import settings
+    
+    env_path = os.path.join(os.getcwd(), ".env")
+    env_content = ""
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            env_content = f.read()
+
+    try:
+        if req.type == "vision":
+            vision_mode = "ocr" if "ocr" in req.model_name.lower() else "local_model"
+            vision_model_name = "" if vision_mode == "ocr" else req.model_name
+            
+            # Download model
+            if vision_mode == "local_model" and vision_model_name:
+                from huggingface_hub import snapshot_download
+                if "moondream2" in vision_model_name.lower():
+                    snapshot_download(vision_model_name, revision="2024-08-26")
+                else:
+                    snapshot_download(vision_model_name)
+                    
+            # Update .env
+            if "RAG_VISION_MODE" in env_content:
+                env_content = re.sub(r'RAG_VISION_MODE=.*', f'RAG_VISION_MODE={vision_mode}', env_content)
+                env_content = re.sub(r'RAG_VISION_MODEL=.*', f'RAG_VISION_MODEL={vision_model_name}', env_content)
+            else:
+                env_content += f"\n# Vision Configuration\nRAG_VISION_MODE={vision_mode}\nRAG_VISION_MODEL={vision_model_name}\n"
+            
+            # Update settings at runtime
+            settings.vision_mode = vision_mode
+            settings.vision_model = vision_model_name
+            
+        elif req.type == "audio":
+            # Download model
+            import whisper
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                cache_dir = os.path.join(os.getcwd(), "cache", "whisper")
+                os.makedirs(cache_dir, exist_ok=True)
+                whisper.load_model(req.model_name, download_root=cache_dir, device="cpu")
+                
+            # Update .env
+            if "RAG_AUDIO_MODEL" in env_content:
+                env_content = re.sub(r'RAG_AUDIO_MODEL=.*', f'RAG_AUDIO_MODEL={req.model_name}', env_content)
+            else:
+                env_content += f"\n# Audio Configuration\nRAG_AUDIO_MODEL={req.model_name}\n"
+                
+            # Update settings at runtime
+            settings.audio_model = req.model_name
+            
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model type")
+            
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(env_content)
+            
+        return {"status": "success", "message": f"Cấu hình {req.type} model thành công."}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- END SYSTEM MODEL CONFIGURATION ENDPOINTS ---
 
 # Phục vụ giao diện React (Frontend SPA)
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend", "dist")
