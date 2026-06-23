@@ -1,12 +1,14 @@
 from typing import List, Dict, Any
 from ..ingestion.indexing import VectorStoreManager
 from ..utils.config import settings
+from src.utils.telemetry import trace_execution
 
 class SearchEngine:
     """Công cụ truy xuất dữ liệu từ Vector Database (RAG Retrieval)."""
     def __init__(self, vector_store: VectorStoreManager):
         self.vector_store = vector_store
 
+    @trace_execution(event_name="retrieval", module="search_engine")
     def retrieve(self, query: str, notebook_id: str, top_k: int = 5) -> str:
         """
         Tìm kiếm các đoạn văn bản liên quan và định dạng chúng thành Context cho LLM.

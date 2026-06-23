@@ -1,4 +1,4 @@
-﻿"""
+"""
 Typer CLI â€” Command-line interface for Simple NotebookLM v2.0
 """
 import json
@@ -120,13 +120,6 @@ def flashcards(
     typer.echo("Generating flashcards...")
     result = generate_flashcards(document=document, query=query, filters=parsed, count=count, k=k)
     _emit(result, output, fmt)
-
-@app.command("cache-clear")
-def cache_clear():
-    """Clear the Redis semantic cache."""
-    from src.cache import get_cache
-    get_cache().flush_all()
-    typer.secho("Cache cleared.", fg=typer.colors.YELLOW)
 
 if __name__ == "__main__":
     app()
