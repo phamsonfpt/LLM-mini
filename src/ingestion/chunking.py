@@ -84,9 +84,15 @@ class AdaptiveChunker:
     def __init__(self, embedder=None):
         self.tier = self._get_hardware_tier()
         
-        if self.tier in [1, 2]:
-            if not embedder:
-                raise ValueError("Semantic Chunking cần một Embedder object.")
+        if self.tier in [1,2,3]:
+            # Lấy embedder từ orchestrator nếu không truyền vào
+            if embedder is None:
+                try:
+                    from ..utils.vram_orchestrator import get_orchestrator
+                    embedder = get_orchestrator().get_embedder()
+                except ImportError:
+                    from ..ingestion.embedding import LocalEmbedder
+                    embedder = LocalEmbedder()
             print("[AdaptiveChunker] Chế độ GPU: Kích hoạt Semantic Chunking.")
             self.chunker = SemanticChunker(embedder=embedder, threshold=0.75)
         else:

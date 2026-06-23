@@ -29,6 +29,7 @@ function Studio() {
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInputValue, setUrlInputValue] = useState('');
   const [uploadingDocs, setUploadingDocs] = useState([]);
+  const [selectedCitation, setSelectedCitation] = useState(null);
 
   const messagesEndRef = useRef(null);
 
@@ -133,7 +134,7 @@ function Studio() {
     try {
       const res = await fetch(`/api/notebooks/${activeNotebook.id}`, { method: 'DELETE' });
       if (res.ok) {
-        navigate(-1);
+        navigate('/dashboard');
       }
     } catch (e) {
       console.error(e);
@@ -509,7 +510,11 @@ function Studio() {
               {msg.citations && msg.citations.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {msg.citations.map((cit, cidx) => (
-                    <div key={cidx} className="flex items-center gap-1.5 text-xs bg-electric-blue/10 border border-electric-blue/30 text-electric-blue px-2.5 py-1 rounded-full cursor-pointer hover:bg-electric-blue/20 transition-colors">
+                    <div 
+                      key={cidx} 
+                      onClick={() => setSelectedCitation(cit)}
+                      className="flex items-center gap-1.5 text-xs bg-electric-blue/10 border border-electric-blue/30 text-electric-blue px-2.5 py-1 rounded-full cursor-pointer hover:bg-electric-blue/20 transition-colors"
+                    >
                       <span className="font-semibold">{cit.marker}</span>
                       <ChevronRight size={12} className="opacity-50" />
                       <span className="truncate max-w-[150px] opacity-80">{cit.filename}</span>
@@ -785,6 +790,48 @@ function Studio() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Citation Preview Modal */}
+      {selectedCitation && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm animate-fade-in">
+          <div className="bg-[#1C1F26] border border-white/10 rounded-2xl p-6 max-w-2xl w-full shadow-2xl flex flex-col max-h-[80vh] text-left">
+            <div className="flex justify-between items-center mb-4 pb-3 border-b border-white/10">
+              <h3 className="text-lg font-semibold text-blue-400">
+                Chi tiết trích dẫn {selectedCitation.marker}
+              </h3>
+              <button 
+                onClick={() => setSelectedCitation(null)}
+                className="text-gray-400 hover:text-white transition-colors text-lg"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto pr-2 text-sm text-gray-300 space-y-4">
+              <div>
+                <span className="text-xs text-gray-500 font-medium">Nguồn tài liệu:</span>
+                <p className="text-white font-medium mt-0.5 break-all">{selectedCitation.filename}</p>
+              </div>
+              
+              <div>
+                <span className="text-xs text-gray-500 font-medium">Nội dung trích dẫn:</span>
+                <div className="bg-black/30 border border-white/5 rounded-xl p-4 mt-1 font-sans text-gray-200 leading-relaxed whitespace-pre-wrap max-h-[40vh] overflow-y-auto">
+                  {selectedCitation.content || "Không có nội dung chi tiết."}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end mt-6">
+              <button 
+                onClick={() => setSelectedCitation(null)}
+                className="px-5 py-2 rounded-full text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+              >
+                Đóng
+              </button>
+            </div>
           </div>
         </div>
       )}

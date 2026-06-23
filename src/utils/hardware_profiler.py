@@ -181,64 +181,73 @@ class ModelZooManager:
 
     def setup_ollama_portable(self, model_tag: str):
         """LỚP 3: Tự động tải Ollama Portable, bật server ngầm, và pull model."""
-        print("\n[LỚP 3 - Cứu cánh] Kích hoạt chế độ tải Ollama Portable dành cho CPU cũ/Không tương thích...")
-        bin_dir = os.path.join(os.getcwd(), "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        
-        is_windows = platform.system() == "Windows"
-        ollama_exe = os.path.join(bin_dir, "ollama.exe" if is_windows else "ollama")
-        
-        # 1. Tải Ollama Portable nếu chưa có
-        if not os.path.exists(ollama_exe):
-            print("[Lớp 3] Đang tải Ollama Portable. Vui lòng đợi...")
-            import urllib.request
-            import zipfile
-            import tempfile
-            import sys
-            
-            def download_progress(block_num, block_size, total_size):
-                downloaded = block_num * block_size
-                if total_size > 0:
-                    percent = downloaded * 100 / total_size
-                    sys.stdout.write(f"\r[Lớp 3] Tiến độ tải: {percent:.1f}% ({downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB)")
-                    sys.stdout.flush()
-                    
-            if is_windows:
-                url = "https://ollama.com/download/ollama-windows-amd64.zip"
-                zip_path = os.path.join(tempfile.gettempdir(), "ollama_portable.zip")
-                urllib.request.urlretrieve(url, zip_path, reporthook=download_progress)
-                print("\n[Lớp 3] Đang giải nén Ollama...")
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(bin_dir)
-                os.remove(zip_path)
-            elif platform.system() == "Darwin":
-                # Mac M-series ARM64
-                url = "https://ollama.com/download/ollama-darwin-arm64"
-                urllib.request.urlretrieve(url, ollama_exe, reporthook=download_progress)
-                os.chmod(ollama_exe, 0o755) # Cấp quyền thực thi
-                print("\n[Lớp 3] Đã tải xong Ollama cho macOS.")
-            
-        # 2. Khởi động Ollama Serve ngầm nếu chưa chạy
+        import shutil
         import urllib.request
+        import zipfile
+        import tempfile
+        import time
+
+        print("\n[LỚP 3 - Cứu cánh] Kích hoạt chế độ kiểm tra Ollama...")
+        is_windows = platform.system() == "Windows"
+        
+        # Kiểm tra xem máy đã có Ollama cài đặt sẵn (Global) chưa
+        global_ollama = shutil.which("ollama.exe" if is_windows else "ollama")
+        
+        if global_ollama:
+            print(f"[Smart Cache] Đã phát hiện Ollama cài đặt sẵn trên máy tại: {global_ollama}")
+            ollama_exe = global_ollama
+        else:
+            print("[Smart Cache] Không tìm thấy Ollama trên hệ thống. Sẽ dùng bản Portable.")
+            bin_dir = os.path.join(os.getcwd(), "bin")
+            os.makedirs(bin_dir, exist_ok=True)
+            ollama_exe = os.path.join(bin_dir, "ollama.exe" if is_windows else "ollama")
+            
+            # Tải Ollama Portable nếu chưa có
+            if not os.path.exists(ollama_exe):
+                print("[Lớp 3] Đang tải Ollama Portable. Vui lòng đợi...")
+                def download_progress(block_num, block_size, total_size):
+                    downloaded = block_num * block_size
+                    if total_size > 0:
+                        percent = downloaded * 100 / total_size
+                        sys.stdout.write(f"\r[Lớp 3] Tiến độ tải: {percent:.1f}% ({downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB)")
+                        sys.stdout.flush()
+                        
+                if is_windows:
+                    url = "https://ollama.com/download/ollama-windows-amd64.zip"
+                    zip_path = os.path.join(tempfile.gettempdir(), "ollama_portable.zip")
+                    urllib.request.urlretrieve(url, zip_path, reporthook=download_progress)
+                    print("\n[Lớp 3] Đang giải nén Ollama...")
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        zip_ref.extractall(bin_dir)
+                    os.remove(zip_path)
+                elif platform.system() == "Darwin":
+                    url = "https://ollama.com/download/ollama-darwin-arm64"
+                    urllib.request.urlretrieve(url, ollama_exe, reporthook=download_progress)
+                    os.chmod(ollama_exe, 0o755)
+                    print("\n[Lớp 3] Đã tải xong Ollama cho macOS.")
+            else:
+                print("[Smart Cache] Đã có sẵn Ollama Portable trong thư mục bin, bỏ qua tải về.")
+            
+        # Khởi động Ollama Serve ngầm nếu chưa chạy
         try:
-            urllib.request.urlopen("http://localhost:11434", timeout=1)
+            urllib.request.urlopen("http://127.0.0.1:11434", timeout=1)
+            print("[Smart Cache] Ollama AI Engine đã đang chạy sẵn, bỏ qua khởi động.")
         except:
             print("[Lớp 3] Đang khởi động AI Engine (Ollama)...")
             creationflags = subprocess.CREATE_NO_WINDOW if is_windows else 0
             env = os.environ.copy()
-            # Bật serve ngầm
             subprocess.Popen([ollama_exe, "serve"], creationflags=creationflags, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            import time
             for _ in range(30):
                 try:
-                    urllib.request.urlopen("http://localhost:11434", timeout=1)
+                    urllib.request.urlopen("http://127.0.0.1:11434", timeout=1)
                     break
                 except:
                     time.sleep(0.5)
         
-        # 3. Kích hoạt Pull Model
-        print(f"\n[Lớp 3] Hệ thống đang tải bộ não AI tương thích cho Ollama: \033[92m{model_tag}\033[0m")
+        # Kích hoạt Pull Model
+        print(f"\n[Lớp 3] Hệ thống đang kiểm tra/tải bộ não AI tương thích: \033[92m{model_tag}\033[0m")
         try:
+            # subprocess.run sẽ in output ra màn hình. Nếu máy đã có model, Ollama chỉ tốn 1 giây để verified hash.
             subprocess.run([ollama_exe, "pull", model_tag], check=True)
             print(f"[Lớp 3] Sẵn sàng phục vụ!")
         except Exception as e:

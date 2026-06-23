@@ -1,17 +1,18 @@
 from typing import List, Dict, Any
 from ..ingestion.indexing import VectorStoreManager
 from ..utils.config import settings
+from .hybrid_search import HybridSearcher
 
 class SearchEngine:
     """Công cụ truy xuất dữ liệu từ Vector Database (RAG Retrieval)."""
     def __init__(self, vector_store: VectorStoreManager):
-        self.vector_store = vector_store
+        self.hybrid_searcher = HybridSearcher(vector_store=vector_store)
 
     def retrieve(self, query: str, notebook_id: str, top_k: int = 5) -> str:
         """
         Tìm kiếm các đoạn văn bản liên quan và định dạng chúng thành Context cho LLM.
         """
-        results = self.vector_store.search(query, limit=top_k, notebook_id=notebook_id)
+        results = self.hybrid_searcher.search(query, k=top_k, notebook_id=notebook_id)
         
         if not results:
             return "Không tìm thấy thông tin liên quan trong tài liệu.", []
