@@ -55,11 +55,7 @@ class Settings(BaseSettings):
     flashcards_default_count: int = Field(default=15, ge=1, le=100)
     api_url: str = "http://localhost:8000"
 
-    # --- NEW: Redis Semantic Cache ---
-    redis_host: str = "localhost"
-    redis_port: int = 6379
-    redis_db: int = 0
-    redis_password: Optional[str] = None
+    # --- Local Semantic Cache ---
     cache_ttl: int = Field(default=3600, ge=60, description="Cache TTL in seconds")
     cache_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1.0)
 
@@ -75,7 +71,7 @@ class Settings(BaseSettings):
     use_reranker: bool = True
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     bm25_top_k: int = Field(default=15, ge=1, le=100)
-    ollama_base_url: str = "http://localhost:11434"
+    llama_server_url: str = "http://127.0.0.1:8080"
 
     # --- NEW: Stream Batching ---
     stream_buffer_ms: int = Field(default=50, ge=10, le=500)

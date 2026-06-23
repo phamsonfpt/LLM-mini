@@ -9,23 +9,11 @@ logger = logging.getLogger(__name__)
 
 class LLMEngine:
     """
-    LLM Engine sử dụng Cơ chế Gọi API tới Ollama Bridge.
+    LLM Engine sử dụng Cơ chế Gọi API tới llama.cpp server.
     Đã được thiết kế động theo cấu hình từ file .env
     """
     def __init__(self):
-        # Không tự đoán phần cứng nữa, đọc thẳng từ config đã được Host cấu hình
-        self.ollama_url = settings.ollama_base_url
-        # Default model cho Ollama
-        self.model_tag = "qwen2.5:3b" if settings.use_reranker else "qwen2.5:0.5b"
-        
-        # Thử lấy tên model chính xác từ Ollama API nếu có thể
-        try:
-            tags = requests.get(f"{self.ollama_url}/api/tags", timeout=2).json()
-            if "models" in tags and len(tags["models"]) > 0:
-                # Lấy model đầu tiên làm mặc định (vì Host đã pull model tốt nhất)
-                self.model_tag = tags["models"][0]["name"]
-        except Exception:
-            pass
+        self.llama_url = settings.llama_server_url
 
     def generate(self, prompt: str, system_prompt: str = "", is_private: bool = True, gemini_api_key: Optional[str] = None) -> Generator[str, None, None]:
         """Tạo phản hồi dạng Stream (nhả từng chữ)."""
@@ -47,10 +35,9 @@ class LLMEngine:
                 logger.error(f"Lỗi Gemini API: {e}")
                 yield f"Lỗi Gemini API: {e}. Đang fallback về Local Model..."
                 
-        # Gọi Ollama REST API qua Bridge
+        # Gọi llama.cpp REST API (OpenAI format)
         try:
             payload = {
-                "model": self.model_tag,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
@@ -58,20 +45,30 @@ class LLMEngine:
                 "stream": True
             }
             
-            with requests.post(f"{self.ollama_url}/api/chat", json=payload, stream=True) as response:
+            with requests.post(f"{self.llama_url}/v1/chat/completions", json=payload, stream=True) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
                     if line:
-                        chunk_data = json.loads(line)
-                        if "message" in chunk_data and "content" in chunk_data["message"]:
-                            yield chunk_data["message"]["content"]
-                            
+                        line = line.decode('utf-8')
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                    delta = chunk_data["choices"][0].get("delta", {})
+                                    if "content" in delta:
+                                        yield delta["content"]
+                            except json.JSONDecodeError:
+                                pass
+                                
         except requests.exceptions.ConnectionError:
             error_msg = (
-                f"⚠️ **Lỗi hệ thống: Không thể kết nối tới Ollama tại {self.ollama_url}!**\n\n"
-                "Hệ thống LLM trên Windows (Host) chưa sẵn sàng hoặc cổng 11434 bị chặn."
+                f"⚠️ **Lỗi hệ thống: Không thể kết nối tới Llama.cpp tại {self.llama_url}!**\n\n"
+                "Tiến trình llama-server chưa được khởi chạy đúng cách."
             )
-            logger.error("Không thể kết nối Ollama.")
+            logger.error("Không thể kết nối Llama.cpp.")
             yield error_msg
             
         except Exception as e:
