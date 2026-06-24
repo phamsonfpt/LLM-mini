@@ -110,10 +110,10 @@ class ModelZooManager:
     def _auto_select_llm(self):
         """Tự động chọn LLM Model dựa trên VRAM/RAM. Không cần hỏi người dùng."""
         models_map = {
-            "14b": {"repo": "Qwen/Qwen2.5-14B-Instruct-GGUF", "file": "qwen2.5-14b-instruct-q4_k_m.gguf", "label": "Qwen 2.5 (14B)", "disk_gb": 9.0},
-            "7b":  {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",  "file": "qwen2.5-7b-instruct-q4_k_m.gguf",  "label": "Qwen 2.5 (7B)",  "disk_gb": 4.5},
-            "3b":  {"repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",  "file": "qwen2.5-3b-instruct-q4_k_m.gguf",  "label": "Qwen 2.5 (3B)",  "disk_gb": 2.0},
-            "0.5b":{"repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF","file": "qwen2.5-0.5b-instruct-q4_k_m.gguf","label": "Qwen 2.5 (0.5B)","disk_gb": 0.5},
+            "14b": {"repo": "Qwen/Qwen2.5-14B-Instruct-GGUF", "file": "qwen2.5-14b-instruct-q4_k_m.gguf", "tag": "qwen2.5:14b", "label": "Qwen 2.5 (14B)", "disk_gb": 9.0},
+            "7b":  {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",  "file": "qwen2.5-7b-instruct-q4_k_m.gguf",  "tag": "qwen2.5:7b", "label": "Qwen 2.5 (7B)",  "disk_gb": 4.5},
+            "3b":  {"repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",  "file": "qwen2.5-3b-instruct-q4_k_m.gguf",  "tag": "qwen2.5:3b", "label": "Qwen 2.5 (3B)",  "disk_gb": 2.0},
+            "0.5b":{"repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF","file": "qwen2.5-0.5b-instruct-q4_k_m.gguf","tag": "qwen2.5:0.5b", "label": "Qwen 2.5 (0.5B)","disk_gb": 0.5},
         }
         
         # Quyết định dựa trên VRAM khả dụng (trừ ~1GB cho hệ thống)
@@ -218,14 +218,41 @@ class ModelZooManager:
         # 1. Sinh file requirements.txt
         self._generate_requirements()
             
-        # 2. Cài đặt llama.cpp và Model (cho Lớp 2)
+        # 2. Cơ chế Fallback 3 Lớp: Cài đặt AI Engine
         llama = LlamaManager()
-        server_exe = llama.setup_llama_server(has_cuda=False, has_vulkan=self.has_cuda)
-        model_path = llama.download_model(selected_model["repo"], selected_model["file"])
+        engine_installed = None
+        server_exe = None
+        model_path = None
         
-        print("✅ Đã tạo cấu hình và tải AI engine hoàn tất!")
+        if self.recommended_tier == 2:
+            print("\n⏳ [Điều phối viên] Thử nghiệm Lớp 1 (Tự động biên dịch từ mã nguồn)...")
+            if llama.setup_layer_1():
+                model_path = llama.download_model(selected_model["repo"], selected_model["file"])
+                if llama.test_llama_cpp(model_path):
+                    engine_installed = "llama-cpp-python"
+                    print("\n✅ Lớp 1 cài đặt thành công!")
+                else:
+                    print("\n⚠️ Lớp 1 thất bại (Xung đột AVX). Chuyển sang Lớp 2...")
+            
+            if engine_installed is None:
+                print("\n⏳ [Điều phối viên] Đang cài đặt Lớp 2 (llama-server Native)...")
+                server_exe = llama.setup_llama_server(has_cuda=False, has_vulkan=self.has_cuda)
+                model_path = llama.download_model(selected_model["repo"], selected_model["file"])
+                engine_installed = "llama-server"
+                print("\n✅ Lớp 2 cài đặt thành công!")
+        else:
+            print("\n⏳ [Điều phối viên] Hệ thống yêu cầu sử dụng Lớp 3 (Ollama)...")
+            if llama.setup_ollama():
+                engine_installed = "ollama"
+                model_path = selected_model["tag"]
+                print("\n✅ Lớp 3 (Ollama) đã được cài đặt và kích hoạt!")
+            else:
+                print("\n❌ Cài đặt Ollama thất bại!")
+        
+        print("\n✅ Đã tạo cấu hình và thiết lập AI engine hoàn tất!")
         
         return {
+            "engine_installed": engine_installed,
             "server_exe": server_exe,
             "model_path": model_path,
             "has_cuda": self.has_cuda,

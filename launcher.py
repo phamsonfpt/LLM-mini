@@ -51,78 +51,6 @@ def download_uv(bin_dir):
     return uv_exe
 
 
-def is_ollama_installed():
-    """Kiểm tra xem Ollama đã được cài đặt trên máy chưa."""
-    try:
-        result = subprocess.run(
-            ['ollama', '--version'],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
-def setup_ollama():
-    """Cài đặt Ollama tự động (Silent Install) nếu chưa có. Hỗ trợ đa nền tảng."""
-    if is_ollama_installed():
-        print("[Launcher] ✅ Ollama đã được cài đặt sẵn.")
-        return True
-    
-    print("[Launcher] ⏳ Ollama chưa được cài đặt. Đang tiến hành cài đặt tự động...")
-    os_name = platform.system()
-    
-    try:
-        if os_name == "Windows":
-            # Tải OllamaSetup.exe về thư mục tạm
-            setup_url = "https://ollama.com/download/OllamaSetup.exe"
-            setup_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
-            print(f"[Launcher] Đang tải Ollama từ {setup_url}...")
-            urllib.request.urlretrieve(setup_url, setup_path)
-            
-            # Chạy Silent Install (không hiện giao diện)
-            print("[Launcher] Đang cài đặt Ollama (Silent Mode)...")
-            subprocess.run([setup_path, '/SILENT'], check=True, timeout=300)
-            
-            # Dọn dẹp file cài đặt
-            try:
-                os.remove(setup_path)
-            except:
-                pass
-                
-            # Chờ Ollama service khởi động
-            print("[Launcher] Đang chờ Ollama service khởi động...")
-            time.sleep(5)
-            
-        elif os_name == "Darwin":
-            # macOS: Cài qua script chính thức
-            print("[Launcher] Đang cài đặt Ollama trên macOS...")
-            subprocess.run(
-                ['bash', '-c', 'curl -fsSL https://ollama.com/install.sh | sh'],
-                check=True, timeout=300
-            )
-            
-        else:
-            # Linux: Cài qua script chính thức
-            print("[Launcher] Đang cài đặt Ollama trên Linux...")
-            subprocess.run(
-                ['bash', '-c', 'curl -fsSL https://ollama.com/install.sh | sh'],
-                check=True, timeout=300
-            )
-        
-        # Xác nhận cài đặt thành công
-        if is_ollama_installed():
-            print("[Launcher] ✅ Cài đặt Ollama thành công!")
-            return True
-        else:
-            print("[Launcher] ⚠️ Cài đặt Ollama xong nhưng không tìm thấy lệnh 'ollama'. Có thể cần khởi động lại Terminal.")
-            return False
-            
-    except Exception as e:
-        print(f"[Launcher] ❌ Lỗi khi cài đặt Ollama: {e}")
-        print("[Launcher] Bạn có thể cài đặt thủ công tại: https://ollama.com/download")
-        return False
-
 
 def ollama_pull_model(model_name):
     """Tải (pull) model trên Ollama nếu chưa có."""
@@ -184,11 +112,6 @@ def try_llama_server(llama_exe, model_path, config):
 def start_ollama_llm(config):
     """Khởi chạy LLM qua Ollama (Lớp 3). Trả về tên model Ollama đang chạy."""
     print("\n[Launcher] 🔄 Chuyển sang Lớp 3 (Ollama)...")
-    
-    # Cài đặt Ollama nếu chưa có
-    if not setup_ollama():
-        print("[Launcher] ❌ Không thể cài đặt Ollama. Hệ thống sẽ hoạt động ở chế độ giới hạn.")
-        return None
     
     # Xác định model Ollama phù hợp dựa trên cấu hình đã chọn
     selected_llm = config.get("selected_llm", {})
@@ -276,13 +199,37 @@ def main():
     # ============================================================
     # 3. CƠ CHẾ 3 LỚP: Khởi chạy AI Engine
     # ============================================================
-    recommended_tier = config.get("recommended_tier", 3)
+    engine_installed = config.get("engine_installed")
     llama_process = None
     ollama_model = None
     using_ollama = False
     
-    if recommended_tier == 2:
-        # --- Thử Lớp 2 (Native llama-server) trước ---
+    if engine_installed == "llama-cpp-python":
+        print("\n[Launcher] 🚀 Lớp 1 (llama-cpp-python) đã được chọn. Khởi chạy qua thư viện Python...")
+        llama_cmd = [python_exe, "-m", "llama_cpp.server", "--model", config["model_path"], "--host", "127.0.0.1", "--port", "8080", "--n_ctx", "4096"]
+        if config.get("has_cuda") or config.get("has_mac_gpu"):
+            llama_cmd.extend(["--n_gpu_layers", "99"])
+        else:
+            llama_cmd.extend(["--n_gpu_layers", "0"])
+            
+        try:
+            llama_process = subprocess.Popen(llama_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(3)
+            if llama_process.poll() is not None:
+                stderr_output = llama_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"[Launcher] ⚠️ Lớp 1 thất bại lúc khởi chạy ngầm! Lỗi: {stderr_output[:200]}")
+                print("[Launcher] Tự động chuyển sang Lớp 3 (Ollama)...")
+                ollama_model = start_ollama_llm(config)
+                using_ollama = True
+            else:
+                print("[Launcher] ✅ Lớp 1 (llama-cpp-python) khởi chạy thành công!")
+        except Exception as e:
+            print(f"[Launcher] ⚠️ Lớp 1 thất bại: {e}. Tự động chuyển sang Lớp 3 (Ollama)...")
+            ollama_model = start_ollama_llm(config)
+            using_ollama = True
+
+    elif engine_installed == "llama-server":
+        # --- Thử Lớp 2 (Native llama-server) ---
         llama_process = try_llama_server(
             config["server_exe"], config["model_path"], config
         )
@@ -292,11 +239,13 @@ def main():
             print("[Launcher] 🔄 Lớp 2 thất bại. Tự động chuyển sang Lớp 3 (Ollama)...")
             ollama_model = start_ollama_llm(config)
             using_ollama = True
-    else:
+    elif engine_installed == "ollama":
         # --- Lớp 3 (Ollama) ngay từ đầu cho Intel/AMD ---
-        print(f"\n[Launcher] 🎯 Card đồ hoạ: {config['gpu_name']} -> Đi thẳng Lớp 3 (Ollama)")
+        print(f"\n[Launcher] 🎯 Đi thẳng Lớp 3 (Ollama)")
         ollama_model = start_ollama_llm(config)
         using_ollama = True
+    else:
+        print("\n[Launcher] ❌ Cảnh báo: Không có Engine nào được khởi chạy!")
     
     # 4. Chạy Backend
     print("\n[Launcher] Đang khởi động Backend Server...")

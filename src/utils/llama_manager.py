@@ -97,3 +97,95 @@ class LlamaManager:
             raise e
                 
         return target_path
+
+    def check_build_tools(self) -> bool:
+        """Kiểm tra xem C++ Build Tools có được cài đặt không."""
+        if not self.is_windows:
+            return True # Linux/Mac thường có sẵn GCC/Clang
+        try:
+            vswhere_path = os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "Microsoft Visual Studio", "Installer", "vswhere.exe")
+            if os.path.exists(vswhere_path):
+                result = subprocess.run([vswhere_path, "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], capture_output=True, text=True)
+                if result.stdout.strip():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def setup_layer_1(self) -> bool:
+        """Lớp 1: Thử cài đặt llama-cpp-python từ mã nguồn nếu có Build Tools."""
+        try:
+            import llama_cpp
+            logger.info("[Lớp 1] Thư viện llama-cpp-python đã có sẵn.")
+            return True
+        except ImportError:
+            pass
+
+        if self.check_build_tools():
+            logger.info("[Lớp 1] Phát hiện C++ Build Tools! Đang tự biên dịch llama-cpp-python từ mã nguồn để đạt hiệu năng tối đa...")
+            try:
+                subprocess.run(["uv", "pip", "install", "llama-cpp-python", "--no-binary", "llama-cpp-python"], check=True)
+                return True
+            except Exception as e:
+                logger.error(f"[Lớp 1] Biên dịch thất bại: {e}. Sẽ sử dụng Lớp 2 (llama-server)...")
+        return False
+
+    def test_llama_cpp(self, model_path: str) -> bool:
+        """Kiểm thử khởi tạo mô hình bằng llama-cpp-python."""
+        logger.info("[Kiểm thử Lớp 1] Đang test khởi tạo mô hình bằng llama_cpp...")
+        try:
+            from llama_cpp import Llama
+            llm = Llama(model_path=model_path, n_gpu_layers=0, n_ctx=128, verbose=False)
+            logger.info("[Kiểm thử Lớp 1] THÀNH CÔNG! Lớp 1 chạy hoàn hảo.")
+            return True
+        except OSError as e:
+            if "0xc000001d" in str(e) or "illegal instruction" in str(e).lower():
+                logger.error(f"[Kiểm thử Lớp 1] THẤT BẠI! Xung đột tập lệnh CPU (Lỗi 0xc000001d): {e}")
+            else:
+                logger.error(f"[Kiểm thử Lớp 1] THẤT BẠI! Lỗi hệ thống: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"[Kiểm thử Lớp 1] THẤT BẠI! Lỗi không xác định: {e}")
+            return False
+
+    def setup_ollama(self) -> bool:
+        """Lớp 3: Tải và cài đặt Ollama."""
+        logger.info("[Lớp 3] Đang kiểm tra Ollama...")
+        # Check if ollama is already installed
+        try:
+            result = subprocess.run(['ollama', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=self.is_windows)
+            if result.returncode == 0:
+                return True
+        except FileNotFoundError:
+            pass
+            
+        logger.info("[Lớp 3] Ollama chưa được cài đặt. Đang tiến hành cài đặt tự động...")
+        try:
+            if self.is_windows:
+                setup_url = "https://ollama.com/download/OllamaSetup.exe"
+                setup_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+                logger.info(f"[Lớp 3] Đang tải Ollama từ {setup_url}...")
+                urllib.request.urlretrieve(setup_url, setup_path, reporthook=self.download_progress)
+                print("\n[Lớp 3] Đang cài đặt Ollama (Silent Mode)...")
+                subprocess.run([setup_path, '/SILENT'], check=True, timeout=300)
+                try:
+                    os.remove(setup_path)
+                except:
+                    pass
+                import time
+                time.sleep(5)
+            else:
+                subprocess.run(['bash', '-c', 'curl -fsSL https://ollama.com/install.sh | sh'], check=True, timeout=300)
+            
+            # Verify installation
+            try:
+                subprocess.run(['ollama', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=self.is_windows)
+                logger.info("[Lớp 3] ✅ Cài đặt Ollama thành công!")
+                return True
+            except FileNotFoundError:
+                logger.warning("[Lớp 3] ⚠️ Cài đặt Ollama xong nhưng không tìm thấy lệnh 'ollama'. Có thể cần khởi động lại Terminal.")
+                return False
+        except Exception as e:
+            logger.error(f"[Lớp 3] ❌ Lỗi khi cài đặt Ollama: {e}")
+            return False
+
