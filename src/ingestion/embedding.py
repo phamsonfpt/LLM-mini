@@ -38,6 +38,19 @@ class LocalEmbedder:
         if getattr(settings, "embedding_quantization", None) == "int8_onnx" and self.device == "cpu":
             print("[LocalEmbedder] Đang tối ưu hóa chạy CPU cho môi trường Tier 3/4...")
 
+    def unload(self):
+        """Xả mô hình khỏi bộ nhớ."""
+        if hasattr(self, 'model'):
+            del self.model
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Nhúng danh sách các đoạn văn bản (Dùng cho Ingestion)."""
         if not texts:

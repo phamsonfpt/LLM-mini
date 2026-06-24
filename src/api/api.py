@@ -53,15 +53,6 @@ app.add_middleware(
 
 import threading
 
-# Global Instances (Lazy load)
-embedder = None
-vector_store = None
-search_engine = None
-llm_engine = None
-session_manager = None
-query_rewriter = None
-
-embedder_lock = threading.Lock()
 vector_store_lock = threading.Lock()
 search_engine_lock = threading.Lock()
 llm_engine_lock = threading.Lock()
@@ -88,19 +79,15 @@ def startup_event():
     session_manager = SessionManager()
 
 def get_embedder():
-    global embedder
-    if embedder is None:
-        with embedder_lock:
-            if embedder is None:
-                embedder = LocalEmbedder()
-    return embedder
+    from src.utils.vram_orchestrator import get_orchestrator
+    return get_orchestrator().get_embedder()
 
 def get_vector_store():
     global vector_store
     if vector_store is None:
         with vector_store_lock:
             if vector_store is None:
-                vector_store = VectorStoreManager(embedder=get_embedder())
+                vector_store = VectorStoreManager()
     return vector_store
 
 def get_search_engine():
@@ -314,6 +301,8 @@ async def chat_endpoint(request: ChatRequest):
         except Exception as e:
             yield f"data: {json.dumps({'type': 'chunk', 'text': f'Lỗi hệ thống: {e}'})}\n\n"
         finally:
+            from src.utils.vram_orchestrator import get_orchestrator
+            get_orchestrator().release_all()
             session_manager.save_message(request.notebook_id, "assistant", full_response, citations=citations)
 
     # 3. Stream phản hồi
@@ -372,6 +361,9 @@ def process_document_bg(notebook_id: str, tree, filename: str, is_private: bool,
         import traceback
         traceback.print_exc()
         session_manager.update_document_status(notebook_id, filename, "error")
+    finally:
+        from src.utils.vram_orchestrator import get_orchestrator
+        get_orchestrator().release_all()
 
 @app.post("/api/ingest/url")
 @trace_execution(event_name="ingest_url", module="api")
