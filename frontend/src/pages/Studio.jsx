@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Send, Bot, User, FileText, ChevronRight, Paperclip, Loader, Headphones, RefreshCw, BookOpen, Brain, Layers, X, Check, XCircle, Trash2, Link as LinkIcon, Plus, ArrowLeft, ShieldAlert, Zap, Trophy, Star, Lock, AudioLines, MonitorPlay, Video, Network, BarChart, Table, Heart } from 'lucide-react';
+import { Send, Bot, User, FileText, ChevronRight, Paperclip, Loader, Headphones, RefreshCw, BookOpen, Brain, Layers, X, Check, XCircle, Trash2, Link as LinkIcon, Plus, ArrowLeft, AudioLines, Network } from 'lucide-react';
 import QuizConfigModal from '../components/QuizConfigModal';
 import FlashcardConfigModal from '../components/FlashcardConfigModal';
 import PodcastConfigModal from '../components/PodcastConfigModal';
 import MindmapConfigModal from '../components/MindmapConfigModal';
 import ModelSelectionModal from '../components/ModelSelectionModal';
+import Mermaid from '../components/Mermaid';
 
 function Studio() {
   const { id } = useParams();
@@ -14,16 +15,12 @@ function Studio() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [studyGuide, setStudyGuide] = useState(null);
   const [documents, setDocuments] = useState([]);
   const [podcastGenerating, setPodcastGenerating] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   
   // Quiz & Flashcard state
-  const [showQuiz, setShowQuiz] = useState(false);
-  const [showFlashcards, setShowFlashcards] = useState(false);
-  const [podcastUrl, setPodcastUrl] = useState(null);
   const [currentFlashcard, setCurrentFlashcard] = useState(0);
   const [flashcardFlipped, setFlashcardFlipped] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -51,21 +48,14 @@ function Studio() {
   const handleAddExp = async (amount) => {
     if (!activeNotebook) return;
     try {
-      const res = await fetch(`/api/notebooks/${activeNotebook.id}/add-exp`, {
+      await fetch(`/api/notebooks/${activeNotebook.id}/add-exp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount })
       });
-      if (res.ok) {
-        const data = await res.json();
-        setGamification(prev => ({ ...prev, ...data }));
-        setExpToast(`+${amount} EXP`);
-        setTimeout(() => setExpToast(null), 3000);
-        if (data.leveled_up) {
-           alert(`Chúc mừng! Bạn đã đạt Level ${data.level} và nhận được 1 SP!`);
-        }
-      }
-    } catch(e) {}
+    } catch (err) {
+      console.error("Error adding exp", err);
+    }
   };
 
   useEffect(() => {
@@ -163,7 +153,7 @@ function Studio() {
     try {
       const formData = new FormData();
       formData.append('notebook_id', activeNotebook.id);
-      formData.append('style', podcastStyle);
+      formData.append('style', 'normal');
 
       await fetch('/api/podcast/generate', {
         method: 'POST',
@@ -269,7 +259,6 @@ function Studio() {
   };
 
   const proceedWithUpload = async (file) => {
-    setUploading(true);
     setUploadingDocs(prev => [...prev, { filename: file.name }]);
 
     const formData = new FormData();
@@ -283,7 +272,6 @@ function Studio() {
       });
 
       if (!response.ok) throw new Error('Upload failed');
-      const data = await response.json();
       
       // Cập nhật lại danh sách documents
       const docRes = await fetch(`/api/notebooks/${activeNotebook.id}/documents`);
@@ -294,7 +282,6 @@ function Studio() {
       console.error(err);
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ Lỗi khi tải tệp: ${err.message}`, citations: [] }]);
     } finally {
-      setUploading(false);
       setUploadingDocs(prev => prev.filter(d => d.filename !== file.name));
     }
   };
@@ -922,14 +909,12 @@ function Studio() {
                 </div>
               )}
 
-              {activeFeature === 'mindmap' && (
-                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col">
+              {activeFeature === 'mindmap' && studyGuide?.mindmap && (
+                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in relative">
                   <h4 className="font-bold text-pink-400 mb-2 text-sm flex items-center gap-2">
                     <Network size={16} /> Bản đồ tư duy
                   </h4>
-                  <div className="text-sm text-gray-300 whitespace-pre-wrap mt-2 overflow-y-auto max-h-96 pr-2 custom-scrollbar">
-                    {studyGuide?.mindmap || "Chưa có bản đồ tư duy. Hãy click vào mũi tên bên cạnh để tạo một bản đồ tư duy tùy chỉnh!"}
-                  </div>
+                  <Mermaid chart={studyGuide.mindmap} />
                 </div>
               )}
               

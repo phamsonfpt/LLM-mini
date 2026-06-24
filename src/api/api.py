@@ -316,25 +316,8 @@ async def chat_endpoint(request: ChatRequest):
         media_type="text/event-stream"
     )
 
-<<<<<<< HEAD
-@app.post("/api/ingest/url")
-async def ingest_url(background_tasks: BackgroundTasks, notebook_id: str = Form(...), url: str = Form(...)):
-    """Nạp dữ liệu từ URL."""
-    parser = WebParser()
-    tree = parser.parse(url, source_metadata={"notebook_id": notebook_id})
-    
-    filename = tree.metadata.get("title", url)
-    chunker = AdaptiveChunker(embedder=get_embedder())
-    chunks = chunker.process_document(tree)
-    
-    for chunk in chunks:
-        chunk["metadata"]["notebook_id"] = notebook_id
-        chunk["metadata"]["filename"] = filename
-    
-=======
 def _index_all_chunks(notebook_id: str, chunks: list):
     # Vector Indexing
->>>>>>> f9596404713f72a50f34b3f444ecafca4bfa705c
     store = get_vector_store()
     store.index_chunks(chunks)
     
@@ -442,14 +425,9 @@ async def upload_file(
             tree = parser.parse(f.read(), source_metadata={"notebook_id": notebook_id})
     else:
         parser = MarkItDownParser()
-<<<<<<< HEAD
-        
-    tree = parser.parse(file_path, source_metadata={"notebook_id": notebook_id})
-=======
         tree = parser.parse(file_path, source_metadata={"notebook_id": notebook_id})
     
     filename = file.filename
->>>>>>> f9596404713f72a50f34b3f444ecafca4bfa705c
     
     session_manager.add_document(notebook_id, filename, status="processing")
     

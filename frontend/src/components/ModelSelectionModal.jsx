@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Cpu, HardDrive, AlertTriangle, CheckCircle2, DownloadCloud, Server, Loader2, Info } from 'lucide-react';
+import { X, Cpu, HardDrive, AlertTriangle, CheckCircle2, DownloadCloud, Server, Loader2 } from 'lucide-react';
 
 export default function ModelSelectionModal({ isOpen, onClose, onSuccess, type, fileToUpload }) {
   const [resources, setResources] = useState(null);

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Plus, Search, Check, Grid, List, Settings, LayoutGrid, Trash2 } from 'lucide-react';
+import { BookOpen, Plus, Search, Check, Grid, Settings, Trash2 } from 'lucide-react';
 import axios from 'axios';
 
 function Dashboard() {
@@ -12,17 +12,16 @@ function Dashboard() {
   const [apiKey, setApiKey] = useState('');
 
   useEffect(() => {
+    const fetchNotebooks = async () => {
+      try {
+        const res = await axios.get('/api/notebooks');
+        setNotebooks(res.data);
+      } catch (err) {
+        console.error(err);
+      }
+    };
     fetchNotebooks();
   }, []);
-
-  const fetchNotebooks = async () => {
-    try {
-      const res = await axios.get('/api/notebooks');
-      setNotebooks(res.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const deleteNotebook = async (e, notebookId) => {
     e.stopPropagation();
