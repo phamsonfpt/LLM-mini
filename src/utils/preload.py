@@ -8,6 +8,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from src.utils.config import settings
 
 def preload_core_models():
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
     print("\n" + "="*50)
     print(" BẮT ĐẦU TẢI TRƯỚC CÁC MÔ HÌNH LÕI (CACHE PRELOADING) ")
     print("="*50)

@@ -102,26 +102,18 @@ def main():
         print("\n" + "-"*50)
         
     # 6. Fetch Study Guide
-    print("\n--- Fetching Study Guide ---")
+    print("\n--- Fetching Study Guide (Includes Flashcards, Quiz, Mindmap, Podcast) ---")
     while True:
         guide_res = requests.get(f"{BASE_URL}/api/notebooks/{notebook_id}/study-guide")
         if guide_res.status_code == 200:
             guide = guide_res.json()
             if guide and "summary" in guide:
-                print("Study Guide Generated!")
+                print("Study Guide Generated! It contains summary, flashcards, quizzes, etc.")
                 break
         print("Waiting for Study Guide...")
         time.sleep(5)
 
-    # 7. Generate Podcast
-    print("\n--- Generating Podcast ---")
-    pod_res = requests.post(f"{BASE_URL}/api/podcast/generate", data={"notebook_id": notebook_id})
-    print(f"Podcast Generation initiated: {pod_res.status_code}")
-
-    # 8. Gamification Flow
-
-
-    # 9. Delete resources
+    # 7. Delete resources
     print("\n--- Deleting Resources ---")
     docs = requests.get(f"{BASE_URL}/api/notebooks/{notebook_id}/documents").json()
     for d in docs:

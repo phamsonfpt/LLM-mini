@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     audio_model: str = Field(default="", alias="RAG_AUDIO_MODEL")
 
     # LLM Providers Configuration
-    llm_provider: Literal["hf_local", "gemini"] = "hf_local"
+    llm_provider: Literal["hf_local", "gemini", "ollama"] = "hf_local"
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
 
     # Google Gemini API Config

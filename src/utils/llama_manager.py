@@ -118,13 +118,14 @@ class LlamaManager:
             import llama_cpp
             logger.info("[Lớp 1] Thư viện llama-cpp-python đã có sẵn.")
             return True
-        except ImportError:
+        except Exception as e:
+            logger.warning(f"[Lớp 1] Lỗi import llama_cpp (có thể do thiếu DLL): {e}")
             pass
 
         if self.check_build_tools():
             logger.info("[Lớp 1] Phát hiện C++ Build Tools! Đang tự biên dịch llama-cpp-python từ mã nguồn để đạt hiệu năng tối đa...")
             try:
-                subprocess.run(["uv", "pip", "install", "llama-cpp-python", "--no-binary", "llama-cpp-python"], check=True)
+                subprocess.run(["uv", "pip", "install", "llama-cpp-python", "--no-binary", "llama-cpp-python", "--force-reinstall"], check=True)
                 return True
             except Exception as e:
                 logger.error(f"[Lớp 1] Biên dịch thất bại: {e}. Sẽ sử dụng Lớp 2 (llama-server)...")
