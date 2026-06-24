@@ -10,7 +10,6 @@ from ..utils.config import settings
 
 logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
 def _load_cross_encoder():
     """Lazy-load the Cross-Encoder model."""
     try:
@@ -61,7 +60,13 @@ class CrossEncoderReranker:
         if len(chunks) <= rerank_k:
             return chunks
 
-        model = _load_cross_encoder()
+        model = None
+        try:
+            from ..utils.vram_orchestrator import get_orchestrator
+            model = get_orchestrator().get_reranker()
+        except ImportError:
+            model = _load_cross_encoder()
+        
         if model is None:
             logger.warning("Cross-Encoder unavailable. Trả về top chunks mặc định.")
             # Sort by existing score just in case

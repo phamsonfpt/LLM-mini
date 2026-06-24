@@ -10,7 +10,7 @@ from ..document_tree import DocumentNode, ImageNode, ParagraphNode
 class ImageParser:
     """Parser xử lý hình ảnh sử dụng LLaVA (Ollama) và OCR (Tesseract) fallback."""
 
-    def __init__(self, ollama_url: str = "http://localhost:11434", llava_model: str = "llava"):
+    def __init__(self, ollama_url: str = "http://127.0.0.1:11434", llava_model: str = "llava"):
         self.ollama_url = ollama_url
         self.llava_model = llava_model
 

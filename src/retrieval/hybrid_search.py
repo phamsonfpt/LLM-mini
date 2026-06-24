@@ -115,4 +115,4 @@ class HybridSearcher:
         # Combine bằng RRF
         fused = _reciprocal_rank_fusion(semantic_results, bm25_results)
         
-        return fused
+        return fused[:search_k]

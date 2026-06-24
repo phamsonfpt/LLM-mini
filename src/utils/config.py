@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     google_api_key: str | None = Field(default=None, validation_alias="GOOGLE_API_KEY")
 
     # OpenAI / vLLM Config
-    vllm_api_base: str = "http://localhost:8001/v1"
+    vllm_api_base: str = "http://127.0.0.1:8001/v1"
     vllm_api_key: str = "EMPTY"
 
     # Learning Parameters
@@ -53,15 +53,9 @@ class Settings(BaseSettings):
 
     quiz_default_count: int = Field(default=8, ge=1, le=50)
     flashcards_default_count: int = Field(default=15, ge=1, le=100)
-    api_url: str = "http://localhost:8000"
+    api_url: str = "http://127.0.0.1:8000"
 
-    # --- NEW: Redis Semantic Cache ---
-    redis_host: str = "localhost"
-    redis_port: int = 6379
-    redis_db: int = 0
-    redis_password: Optional[str] = None
-    cache_ttl: int = Field(default=3600, ge=60, description="Cache TTL in seconds")
-    cache_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1.0)
+
 
     # --- NEW: Session Memory ---
     session_max_messages: int = Field(default=20, ge=2, le=100)
