@@ -130,3 +130,16 @@
 {"event": "chat_stream", "timestamp": 1782331076.4860628, "latency_ms": 1844, "success": true, "type": "stream"}
 {"event": "chat_stream", "timestamp": 1782331088.457128, "latency_ms": 2146, "success": true, "type": "stream"}
 {"event": "chat_stream", "timestamp": 1782331109.600249, "latency_ms": 2570, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782357985.4471998, "latency_ms": 2896, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358001.967893, "latency_ms": 4629, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358020.1411986, "latency_ms": 3886, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358033.6302798, "latency_ms": 2009, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358047.0742362, "latency_ms": 1870, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358062.0283682, "latency_ms": 2596, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358079.177521, "latency_ms": 2386, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358092.4232852, "latency_ms": 1993, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358107.6589396, "latency_ms": 2181, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358133.3428655, "latency_ms": 2403, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358149.7628257, "latency_ms": 3022, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358164.883019, "latency_ms": 2645, "success": true, "type": "stream"}
+{"event": "chat_stream", "timestamp": 1782358184.1157312, "latency_ms": 6299, "success": true, "type": "stream"}

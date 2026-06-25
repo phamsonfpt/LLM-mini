@@ -166,8 +166,7 @@ def evaluate(subset: str = "hotpotqa", num_samples: int = 10):
 
     # --- Bước 5: Xuất kết quả ---
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(RESULTS_DIR, f"ragbench_{subset}_{timestamp}.csv")
+    out_path = os.path.join(RESULTS_DIR, f"ragbench_{subset}_full.csv")
     df = pd.DataFrame(records)
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     logger.info(f"\n{'='*60}")
