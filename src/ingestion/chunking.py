@@ -35,8 +35,12 @@ class SemanticChunker:
         if not sentences:
             return []
             
-        # Tính embedding cho tất cả các câu một lúc (Batching)
-        embeddings = self.embedder.embed_documents(sentences)
+        # Tính embedding cho tất cả các câu (Sử dụng chia nhỏ mẻ Batching)
+        embeddings = []
+        batch_size = 16
+        for i in range(0, len(sentences), batch_size):
+            batch_sentences = sentences[i:i+batch_size]
+            embeddings.extend(self.embedder.embed_documents(batch_sentences))
         
         chunks = []
         current_chunk = [sentences[0]]

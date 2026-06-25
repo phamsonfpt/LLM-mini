@@ -1,8 +1,33 @@
+import os
+import tempfile
 from pathlib import Path
 from typing import Literal, Optional
 from functools import lru_cache
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Đảm bảo thư mục cache tồn tại
+cache_dir = os.path.join(os.getcwd(), "cache")
+os.makedirs(cache_dir, exist_ok=True)
+
+# 1. Ép hệ thống HuggingFace tải model trực tiếp vào thư mục cache của dự án
+os.environ["HF_HOME"] = os.path.join(cache_dir, "huggingface")
+os.environ["SENTENCE_TRANSFORMERS_HOME"] = os.environ["HF_HOME"]
+
+# 2. Ép Whisper và các thư viện dùng XDG cache chuẩn lưu vào dự án
+os.environ["XDG_CACHE_HOME"] = cache_dir
+
+# 3. Ép công cụ quản lý UV và PIP tải cache vào dự án
+os.environ["UV_CACHE_DIR"] = os.path.join(cache_dir, "uv")
+os.environ["PIP_CACHE_DIR"] = os.path.join(cache_dir, "pip")
+
+# 4. Ép TOÀN BỘ các file tạm thời (Temporary files) của Python (như lúc trích xuất ảnh PDF) vào dự án
+temp_dir = os.path.join(cache_dir, "temp")
+os.makedirs(temp_dir, exist_ok=True)
+os.environ["TMP"] = temp_dir
+os.environ["TEMP"] = temp_dir
+os.environ["TMPDIR"] = temp_dir
+tempfile.tempdir = temp_dir # Cập nhật trực tiếp cho module tempfile nếu nó đã được import trước đó
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RAG_", extra="ignore")

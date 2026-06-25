@@ -26,6 +26,7 @@ class ModelZooManager:
         self.vram_gb = 0
         self.has_cuda = False
         self.gpu_name = "Unknown"
+        self.gpu_vendor = "cpu"
         self.recommended_tier = 2  # Mặc định: Thử Lớp 2 (Native)
         self._detect_gpu()
 
@@ -45,6 +46,7 @@ class ModelZooManager:
                         self.gpu_name = parts[0].strip()
                         self.vram_gb = sum(int(line.split(',')[1].strip()) for line in lines) / 1024
                         self.has_cuda = True
+                        self.gpu_vendor = "nvidia"
                         self.recommended_tier = 2  # NVIDIA -> Thử Lớp 2 (llama-server CUDA)
                         return
             except Exception:
@@ -77,11 +79,14 @@ class ModelZooManager:
                     
                     # Phân Lớp dựa trên tên Card
                     gpu_lower = self.gpu_name.lower()
-                    if any(keyword in gpu_lower for keyword in ['intel', 'iris', 'uhd']):
+                    if any(keyword in gpu_lower for keyword in ['intel', 'iris', 'uhd', 'arc']):
+                        self.gpu_vendor = "intel"
                         self.recommended_tier = 3  # Intel iGPU -> Đi thẳng Lớp 3 (Ollama Vulkan)
                     elif any(keyword in gpu_lower for keyword in ['amd', 'radeon']):
+                        self.gpu_vendor = "amd"
                         self.recommended_tier = 3  # AMD -> Đi thẳng Lớp 3 (Ollama ROCm/Vulkan)
                     else:
+                        self.gpu_vendor = "unknown"
                         self.recommended_tier = 3  # Card không xác định -> An toàn nhất là Lớp 3
                         
             except Exception:
@@ -105,6 +110,7 @@ class ModelZooManager:
                         self.recommended_tier = 3  # Intel Mac cũ -> Lớp 3 an toàn hơn
             except Exception:
                 self.gpu_name = "Mac (Unknown)"
+                self.gpu_vendor = "mac"
                 self.recommended_tier = 2  # Mặc định Mac thử Lớp 2
 
     def _auto_select_llm(self):
@@ -302,24 +308,52 @@ class ModelZooManager:
         if "llvmlite" not in req_content:
             req_content += "\n# Fix: Chốt phiên bản llvmlite cho Python 3.13+\nllvmlite>=0.43.0\n"
             
-        pytorch_mode = "gpu" if self.has_cuda else "cpu"
-        
-        if pytorch_mode == "cpu":
-            if self.os_name == "Darwin":
-                print("📦 PyTorch: Apple Metal (Native)")
-                req_content += "\n# --- PyTorch Apple Metal ---\n"
-                req_content += "torch>=2.0.0\n"
-            else:
-                print("📦 PyTorch: CPU-Only (Diet Plan)")
-                req_content += "\n# --- PyTorch CPU-Only (Diet Plan) ---\n"
-                req_content += "--extra-index-url https://download.pytorch.org/whl/cpu\n"
-                req_content += "torch==2.6.0+cpu\n"
-                req_content += "torchvision==0.21.0+cpu\n"
-                req_content += "torchaudio==2.6.0+cpu\n"
+        # Xác định Vendor
+        if self.os_name == "Darwin":
+            vendor = "mac"
+        elif self.has_cuda or self.gpu_vendor == "nvidia":
+            vendor = "nvidia"
         else:
-            print("📦 PyTorch: Full Speed (NVIDIA GPU)")
-            req_content += "\n# --- PyTorch Full Speed ---\n"
+            vendor = self.gpu_vendor
+            
+        if vendor == "mac":
+            print("📦 PyTorch: Apple Metal (Native MPS)")
+            req_content += "\n# --- PyTorch Apple Metal ---\n"
             req_content += "torch>=2.0.0\n"
+            req_content += "torchvision>=0.15.0\n"
+            req_content += "torchaudio>=2.0.0\n"
+            
+        elif vendor == "nvidia":
+            print("📦 PyTorch: Full Speed (NVIDIA CUDA 12.1)")
+            req_content += "\n# --- PyTorch Full Speed (NVIDIA GPU) ---\n"
+            req_content += "--extra-index-url https://download.pytorch.org/whl/cu121\n"
+            req_content += "torch==2.6.0+cu121\n"
+            req_content += "torchvision==0.21.0+cu121\n"
+            req_content += "torchaudio==2.6.0+cu121\n"
+            
+        elif vendor in ["amd", "intel"] and self.os_name == "Windows":
+            print(f"📦 PyTorch: DirectML (Windows {vendor.upper()} GPU)")
+            req_content += f"\n# --- PyTorch DirectML ({vendor.upper()}) ---\n"
+            req_content += "torch>=2.0.0\n"
+            req_content += "torch-directml\n"
+            req_content += "torchvision>=0.15.0\n"
+            req_content += "torchaudio>=2.0.0\n"
+            
+        elif vendor == "amd" and self.os_name == "Linux":
+            print("📦 PyTorch: ROCm (Linux AMD GPU)")
+            req_content += "\n# --- PyTorch ROCm (Linux AMD) ---\n"
+            req_content += "--extra-index-url https://download.pytorch.org/whl/rocm5.7\n"
+            req_content += "torch==2.6.0+rocm5.7\n"
+            req_content += "torchvision==0.21.0+rocm5.7\n"
+            req_content += "torchaudio==2.6.0+rocm5.7\n"
+            
+        else:
+            print("📦 PyTorch: CPU-Only (Diet Plan)")
+            req_content += "\n# --- PyTorch CPU-Only (Diet Plan) ---\n"
+            req_content += "--extra-index-url https://download.pytorch.org/whl/cpu\n"
+            req_content += "torch==2.6.0+cpu\n"
+            req_content += "torchvision==0.21.0+cpu\n"
+            req_content += "torchaudio==2.6.0+cpu\n"
             
         with open(req_out_path, "w", encoding="utf-8") as f:
             f.write(req_content)

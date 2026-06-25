@@ -43,6 +43,33 @@ except Exception:
 
 app = FastAPI(title="NotebookLM Mini API")
 
+def setup_watchdog():
+    import psutil
+    import os
+    import time
+    import threading
+    parent_pid = os.getppid()
+    
+    def watchdog_thread():
+        while True:
+            if not psutil.pid_exists(parent_pid):
+                print("[Watchdog] Terminal closed! Cleaning up...")
+                for proc in psutil.process_iter(['name', 'cmdline']):
+                    try:
+                        cmd_info = proc.info.get('cmdline') or []
+                        cmdline = " ".join([str(c) for c in cmd_info]).lower()
+                        if ('llama-server' in str(proc.info.get('name', '')).lower() or 'llama_cpp.server' in cmdline) and '8080' in cmdline:
+                            proc.kill()
+                    except:
+                        pass
+                os._exit(0)
+            time.sleep(2)
+            
+    t = threading.Thread(target=watchdog_thread, daemon=True)
+    t.start()
+
+setup_watchdog()
+
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
@@ -180,6 +207,30 @@ def delete_study_guide(notebook_id: str):
     """Xóa Cẩm nang học tập của một Notebook."""
     session_manager.delete_study_guide(notebook_id)
     return {"status": "success"}
+
+@app.delete("/api/notebooks/{notebook_id}/feature/{feature_name}")
+def delete_study_guide_feature(notebook_id: str, feature_name: str):
+    guide = session_manager.get_study_guide(notebook_id) or {}
+    
+    if feature_name in ["quiz", "flashcards", "mindmap"]:
+        if feature_name == "quiz":
+            guide["quiz"] = None
+        elif feature_name == "flashcards":
+            guide["flashcards"] = None
+        elif feature_name == "mindmap":
+            guide["mindmap"] = None
+            
+        session_manager.save_study_guide(
+            notebook_id,
+            summary=guide.get('summary', ''),
+            faq=guide.get('faq', ''),
+            glossary=guide.get('glossary', ''),
+            quiz=guide.get('quiz'),
+            flashcards=guide.get('flashcards'),
+            mindmap=guide.get('mindmap')
+        )
+        return {"status": "success"}
+    return {"status": "error", "message": "Tính năng không hợp lệ hoặc không thể xóa."}
 
 
 class ChatRequest(BaseModel):
@@ -351,15 +402,8 @@ def process_document_bg(notebook_id: str, tree, filename: str, is_private: bool,
         
         document_text = "\n\n".join([chunk["content"] for chunk in chunks])
         
-        # Sinh Study Guide ngầm
-        llm = get_llm_engine()
-        guide_gen = GuideGenerator(llm, session_manager)
-        guide_gen.generate(
-            notebook_id, 
-            document_text, 
-            is_private=is_private,
-            gemini_api_key=api_key
-        )
+        # Đã loại bỏ việc tự động sinh Study Guide ngầm (Summary/FAQ/Glossary) ở đây
+        # Vì giao diện Notebook Guide mới sử dụng cơ chế sinh thủ công từng tính năng (Quiz/Flashcard/Mindmap/Podcast).
         
         clear_cache(notebook_id)
     except Exception as e:
@@ -700,7 +744,11 @@ if os.path.exists(FRONTEND_DIR):
         """Bắt mọi route không có trong API và trả về index.html của React Router."""
         index_path = os.path.join(FRONTEND_DIR, "index.html")
         if os.path.exists(index_path):
-            return FileResponse(index_path)
+            response = FileResponse(index_path)
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
         return {"error": "Frontend chưa được build. Vui lòng chạy npm run build trong thư mục frontend."}
 else:
     @app.get("/")

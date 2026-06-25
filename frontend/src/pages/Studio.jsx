@@ -30,6 +30,7 @@ function Studio() {
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
+  const [generatingFeatures, setGeneratingFeatures] = useState([]);
 
   // Gamification state removed
   const [activeFeature, setActiveFeature] = useState(null);
@@ -487,12 +488,15 @@ function Studio() {
   const handleCustomGenerate = async (type, config) => {
     try {
       setConfigModal(null);
-      alert(`Hệ thống đang xử lý tạo ${type === 'flashcards' ? 'thẻ ghi nhớ' : type} tùy chỉnh. Vui lòng đợi...`);
+      const featureKey = type === 'flashcards' ? 'flashcard' : type;
+      setGeneratingFeatures(prev => [...prev, featureKey]);
+      
       const res = await fetch(`/api/notebooks/${activeNotebook.id}/${type}/custom`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
       });
+      
       if (res.ok) {
         const data = await res.json();
         const guideRes = await fetch(`/api/notebooks/${activeNotebook.id}/study-guide`);
@@ -501,14 +505,34 @@ function Studio() {
         if (type === 'podcast' && data.audio_url) {
           setAudioUrl(data.audio_url);
         }
-        alert("Tạo thành công!");
-        setActiveFeature(type === 'flashcards' ? 'flashcard' : type);
+        setGeneratingFeatures(prev => prev.filter(f => f !== featureKey));
       } else {
+        setGeneratingFeatures(prev => prev.filter(f => f !== featureKey));
         alert("Có lỗi xảy ra khi tạo.");
       }
     } catch (e) {
       console.error(e);
+      setGeneratingFeatures(prev => prev.filter(f => f !== featureKey));
       alert("Lỗi kết nối.");
+    }
+  };
+
+  const handleDeleteFeature = async (e, featureKey) => {
+    e.stopPropagation();
+    if (!window.confirm("Bạn có chắc chắn muốn xóa thẻ này?")) return;
+    try {
+      const apiFeatureKey = featureKey === 'flashcard' ? 'flashcards' : featureKey;
+      const res = await fetch(`/api/notebooks/${activeNotebook.id}/feature/${apiFeatureKey}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        const guideRes = await fetch(`/api/notebooks/${activeNotebook.id}/study-guide`);
+        if (guideRes.ok) setStudyGuide(await guideRes.json());
+        if (activeFeature === featureKey) setActiveFeature(null);
+        if (featureKey === 'podcast') setAudioUrl(null);
+      }
+    } catch(err) {
+      console.error(err);
     }
   };
 
@@ -659,6 +683,158 @@ function Studio() {
         </div>
       </div>
 
+
+        {activeFeature ? (
+            
+        <div className="w-full h-full p-4 overflow-y-auto custom-scrollbar flex flex-col relative">
+          <button 
+            onClick={() => setActiveFeature(null)}
+            className="absolute top-4 right-4 z-50 bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors"
+          >
+            <X size={20} />
+          </button>
+          {/* Inline Content Areas */}
+              {activeFeature === 'podcast' && (
+                <div className="bg-[#1e1f20] p-8 rounded-2xl border border-white/10 shadow-2xl flex flex-col items-center justify-center animate-fade-in max-w-2xl mx-auto mt-10 w-full">
+                  <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(59,130,246,0.4)]">
+                    <Headphones size={64} className="text-white" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-white mb-2">Audio Overview</h3>
+                  <p className="text-gray-400 mb-8 text-center max-w-md">Nghe tóm tắt nội dung tài liệu của bạn qua giọng đọc của 2 MC AI chuyên nghiệp.</p>
+                  
+                  {!audioUrl ? (
+                    <button 
+                      onClick={generatePodcast}
+                      disabled={podcastGenerating}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-full font-medium transition-all disabled:opacity-50 flex justify-center items-center gap-2 shadow-lg hover:shadow-blue-500/25"
+                    >
+                      {podcastGenerating ? <Loader className="animate-spin" size={20} /> : <AudioLines size={20} />}
+                      {podcastGenerating ? "Hệ thống đang tạo Audio..." : "Tạo Podcast ngay"}
+                    </button>
+                  ) : (
+                    <div className="w-full bg-black/40 p-6 rounded-2xl">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-sm font-medium text-electric-blue flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-electric-blue animate-pulse"></span>
+                          Đang phát
+                        </span>
+                      </div>
+                      <audio controls className="w-full h-12 rounded-lg outline-none" src={audioUrl} autoPlay />
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {activeFeature === 'flashcard' && studyGuide?.flashcards && (
+                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col items-center">
+                  <div className="w-full flex justify-between items-center mb-4 text-sm text-gray-400">
+                    <span>Thẻ {currentFlashcard + 1} / {studyGuide.flashcards.length}</span>
+                  </div>
+                  
+                  <div 
+                    className="relative w-full aspect-[4/3] perspective-1000 cursor-pointer group"
+                    onClick={() => setFlashcardFlipped(!flashcardFlipped)}
+                  >
+                    <div className={`w-full h-full absolute top-0 left-0 transition-all duration-500 transform-style-preserve-3d ${flashcardFlipped ? 'rotate-y-180' : ''}`}>
+                      <div className="absolute w-full h-full backface-hidden bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-center text-center shadow-lg group-hover:border-neon-purple/50 transition-colors">
+                        <p className="text-sm font-medium">{studyGuide.flashcards[currentFlashcard].front}</p>
+                      </div>
+                      <div className="absolute w-full h-full backface-hidden bg-neon-purple/10 border border-neon-purple/30 rounded-xl p-4 flex items-center justify-center text-center rotate-y-180 shadow-[0_0_15px_rgba(168,85,247,0.2)]">
+                        <p className="text-sm text-gray-200">{studyGuide.flashcards[currentFlashcard].back}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mt-4 w-full">
+                    <button 
+                      onClick={() => { setFlashcardFlipped(false); setCurrentFlashcard(Math.max(0, currentFlashcard - 1)); }}
+                      disabled={currentFlashcard === 0}
+                      className="flex-1 bg-white/5 py-2 rounded-lg text-xs disabled:opacity-30"
+                    >
+                      Trước
+                    </button>
+                    <button 
+                      onClick={() => { setFlashcardFlipped(false); setCurrentFlashcard(Math.min(studyGuide.flashcards.length - 1, currentFlashcard + 1)); }}
+                      disabled={currentFlashcard === studyGuide.flashcards.length - 1}
+                      className="flex-1 bg-white/5 py-2 rounded-lg text-xs disabled:opacity-30"
+                    >
+                      Sau
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {activeFeature === 'mindmap' && (
+                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col">
+                  <h4 className="font-bold text-pink-400 mb-2 text-sm flex items-center gap-2">
+                    <Network size={16} /> Bản đồ tư duy
+                  </h4>
+                  <div className="text-sm text-gray-300 whitespace-pre-wrap mt-2 overflow-y-auto max-h-96 pr-2 custom-scrollbar">
+                    {studyGuide?.mindmap || "Chưa có bản đồ tư duy. Hãy click vào mũi tên bên cạnh để tạo một bản đồ tư duy tùy chỉnh!"}
+                  </div>
+                </div>
+              )}
+              
+              {activeFeature === 'quiz' && studyGuide?.quiz && (
+                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col">
+
+                    <div className="space-y-4">
+                      {studyGuide.quiz.map((q, idx) => (
+                        <div key={idx} className="bg-white/5 p-3 rounded-lg border border-white/10">
+                          <p className="font-semibold text-xs mb-2">{idx + 1}. {q.question}</p>
+                          <div className="space-y-1">
+                            {q.options.map((opt, oIdx) => {
+                              const isSelected = quizAnswers[idx] === oIdx;
+                              const isCorrect = q.answer === oIdx;
+                              let btnClass = "w-full text-left p-2 rounded border transition-all text-xs ";
+                              
+                              if (!quizSubmitted) {
+                                btnClass += isSelected ? "border-electric-blue bg-electric-blue/20 text-white" : "border-white/10 hover:bg-white/10 text-gray-400";
+                              } else {
+                                if (isCorrect) btnClass += "border-green-500 bg-green-500/20 text-white";
+                                else if (isSelected && !isCorrect) btnClass += "border-red-500 bg-red-500/20 text-white";
+                                else btnClass += "border-white/5 text-gray-500 opacity-50";
+                              }
+
+                              return (
+                                <button 
+                                  key={oIdx} 
+                                  disabled={quizSubmitted}
+                                  onClick={() => setQuizAnswers({...quizAnswers, [idx]: oIdx})}
+                                  className={btnClass}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                      {!quizSubmitted ? (
+                        <button 
+                          onClick={() => setQuizSubmitted(true)}
+                          disabled={Object.keys(quizAnswers).length !== studyGuide.quiz.length}
+                          className="bg-electric-blue text-white px-4 py-2 rounded-lg text-xs w-full disabled:opacity-50"
+                        >
+                          Nộp bài
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => {setQuizAnswers({}); setQuizSubmitted(false);}}
+                          className="bg-white/10 text-white px-4 py-2 rounded-lg text-xs w-full"
+                        >
+                          Làm lại
+                        </button>
+                      )}
+                    </div>
+                </div>
+              )}
+
+
+        </div>
+
+        ) : (
+            <>
       <div className="flex-1 overflow-y-auto scrollbar-hide flex flex-col gap-6 pb-4">
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -789,6 +965,9 @@ function Studio() {
           NotebookLM Mini có thể đưa ra thông tin không chính xác. Hãy luôn kiểm tra lại nguồn trích dẫn.
         </div>
       </div>
+            </>
+        )}
+
       </div>
 
       <div className="w-80 lg:w-96 flex-shrink-0 h-full p-4 overflow-y-auto scrollbar-hide bg-[#131314] flex flex-col gap-6 border-l border-white/5 relative">
@@ -801,194 +980,145 @@ function Studio() {
           </div>
           
           <div className="mt-4">
-              <div className="flex flex-col gap-2 mb-4">
-                <div className="flex border border-white/10 rounded-xl overflow-hidden bg-white/5 transition-all focus-within:ring-1 focus-within:ring-electric-blue">
-                  <button 
-                    onClick={() => handleFeatureClick('quiz')}
-                    className={`flex-1 flex items-center gap-2 p-3 text-left hover:bg-white/10 transition-colors ${activeFeature === 'quiz' ? 'bg-electric-blue/20 text-electric-blue' : 'text-gray-300'}`}
-                  >
-                    <Brain size={18} className="flex-shrink-0" />
-                    <span className="font-semibold text-sm">Bài kiểm tra</span>
-                  </button>
-                  <button onClick={() => setConfigModal('quiz')} className="px-3 hover:bg-white/10 border-l border-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors">
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
+                            {/* Notebook Guide Grid */}
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                <button 
+                  onClick={() => handleFeatureClick('mindmap')}
+                  className="flex flex-col justify-between p-4 rounded-2xl bg-[#282a2c] hover:bg-[#333537] border border-transparent transition-all h-24 text-left group relative"
+                >
+                  <Network size={24} className="text-[#c48cb3] mb-2" />
+                  <span className="text-sm font-medium text-white group-hover:text-pink-400 transition-colors">Bản đồ tư duy</span>
+                  <ChevronRight size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
 
-                <div className="flex border border-white/10 rounded-xl overflow-hidden bg-white/5 transition-all focus-within:ring-1 focus-within:ring-neon-purple">
-                  <button 
-                    onClick={() => handleFeatureClick('flashcard')}
-                    className={`flex-1 flex items-center gap-2 p-3 text-left hover:bg-white/10 transition-colors ${activeFeature === 'flashcard' ? 'bg-neon-purple/20 text-neon-purple' : 'text-gray-300'}`}
-                  >
-                    <Layers size={18} className="flex-shrink-0" />
-                    <span className="font-semibold text-sm">Thẻ ghi nhớ</span>
-                  </button>
-                  <button onClick={() => setConfigModal('flashcard')} className="px-3 hover:bg-white/10 border-l border-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors">
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
+                <button 
+                  onClick={() => handleFeatureClick('quiz')}
+                  className="flex flex-col justify-between p-4 rounded-2xl bg-[#282a2c] hover:bg-[#333537] border border-transparent transition-all h-24 text-left group relative"
+                >
+                  <Brain size={24} className="text-[#8cb3c4] mb-2" />
+                  <span className="text-sm font-medium text-white group-hover:text-blue-300 transition-colors">Bài kiểm tra</span>
+                  <ChevronRight size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
 
-                <div className="flex border border-white/10 rounded-xl overflow-hidden bg-white/5 transition-all focus-within:ring-1 focus-within:ring-pink-500">
-                  <button 
-                    onClick={() => handleFeatureClick('mindmap')}
-                    className={`flex-1 flex items-center gap-2 p-3 text-left hover:bg-white/10 transition-colors ${activeFeature === 'mindmap' ? 'bg-pink-500/20 text-pink-400' : 'text-gray-300'}`}
-                  >
-                    <Network size={18} className="flex-shrink-0" />
-                    <span className="font-semibold text-sm">Bản đồ tư duy</span>
-                  </button>
-                  <button onClick={() => setConfigModal('mindmap')} className="px-3 hover:bg-white/10 border-l border-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors">
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
+                <button 
+                  onClick={() => handleFeatureClick('flashcard')}
+                  className="flex flex-col justify-between p-4 rounded-2xl bg-[#282a2c] hover:bg-[#333537] border border-transparent transition-all h-24 text-left group relative"
+                >
+                  <Layers size={24} className="text-[#b3c48c] mb-2" />
+                  <span className="text-sm font-medium text-white group-hover:text-green-300 transition-colors">Thẻ ghi nhớ</span>
+                  <ChevronRight size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
 
-                <div className="flex border border-white/10 rounded-xl overflow-hidden bg-white/5 transition-all focus-within:ring-1 focus-within:ring-blue-500">
-                  <button 
-                    onClick={() => handleFeatureClick('podcast')}
-                    className={`flex-1 flex items-center gap-2 p-3 text-left hover:bg-white/10 transition-colors ${activeFeature === 'podcast' ? 'bg-blue-500/20 text-blue-400' : 'text-gray-300'}`}
-                  >
-                    <AudioLines size={18} className="flex-shrink-0" />
-                    <span className="font-semibold text-sm">Tổng quan bằng âm thanh</span>
-                  </button>
-                  <button onClick={() => setConfigModal('podcast')} className="px-3 hover:bg-white/10 border-l border-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-colors">
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
+                <button 
+                  onClick={() => handleFeatureClick('podcast')}
+                  className="flex flex-col justify-between p-4 rounded-2xl bg-[#282a2c] hover:bg-[#333537] border border-transparent transition-all h-24 text-left group relative"
+                >
+                  <AudioLines size={24} className="text-[#c4a48c] mb-2" />
+                  <span className="text-sm font-medium text-white group-hover:text-orange-300 transition-colors">Podcast</span>
+                  <ChevronRight size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
               </div>
 
-              {/* Inline Content Areas */}
-              {activeFeature === 'podcast' && (
-                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in">
-                  <h4 className="font-bold text-electric-blue mb-2 text-sm flex items-center gap-2">
-                    <AudioLines size={16} /> Podcast Generator
-                  </h4>
-                  {!audioUrl ? (
-                    <div className="flex flex-col gap-3">
-                      <p className="text-xs text-gray-400">Tạo bản thu âm trò chuyện giữa 2 MC ảo.</p>
-                      
+              <div className="h-[1px] w-full bg-white/10 mb-6"></div>
 
-                      <button 
-                        onClick={generatePodcast}
-                        disabled={podcastGenerating}
-                        className="w-full bg-gradient-to-r from-electric-blue to-neon-purple hover:opacity-90 text-white font-medium py-2 rounded-xl transition-all disabled:opacity-50 flex justify-center items-center gap-2 text-sm"
-                      >
-                        {podcastGenerating ? <RefreshCw className="animate-spin" size={16} /> : <Headphones size={16} />}
-                        {podcastGenerating ? "Đang tạo..." : "Tạo Podcast"}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="mt-2">
-                      <audio controls className="w-full h-10 rounded outline-none" src={audioUrl} />
-                    </div>
-                  )}
-                </div>
-              )}
-              
-              {activeFeature === 'flashcard' && studyGuide?.flashcards && (
-                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col items-center">
-                  <div className="w-full flex justify-between items-center mb-4 text-sm text-gray-400">
-                    <span>Thẻ {currentFlashcard + 1} / {studyGuide.flashcards.length}</span>
-                  </div>
-                  
+              {/* Generated Cards List */}
+              <div className="flex flex-col gap-3">
+                <h4 className="text-sm font-medium text-gray-400 mb-2">Thẻ đã lưu</h4>
+                
+                {/* Generating States */}
+                {generatingFeatures.map(feat => (
+                   <div key={`gen-${feat}`} className="flex items-center p-3 rounded-xl bg-[#1e1f20] border border-white/10 animate-fade-in">
+                     <div className="w-8 h-8 rounded-lg bg-black/30 flex items-center justify-center mr-3 shrink-0">
+                       <Loader size={16} className="animate-spin text-white" />
+                     </div>
+                     <div className="flex-1 min-w-0">
+                       <div className="text-sm font-medium text-white">Đang tạo {feat === 'quiz' ? 'Bài kiểm tra' : feat === 'mindmap' ? 'Bản đồ tư duy' : feat === 'flashcard' ? 'Thẻ ghi nhớ' : 'Podcast'}...</div>
+                       <div className="text-xs text-gray-400">Đang xử lý dữ liệu</div>
+                     </div>
+                   </div>
+                ))}
+
+                {/* Completed States */}
+                {studyGuide?.mindmap && (
                   <div 
-                    className="relative w-full aspect-[4/3] perspective-1000 cursor-pointer group"
-                    onClick={() => setFlashcardFlipped(!flashcardFlipped)}
+                    onClick={() => setActiveFeature('mindmap')}
+                    className="flex items-center p-3 rounded-xl bg-[#282a2c] hover:bg-[#333537] transition-colors cursor-pointer group"
                   >
-                    <div className={`w-full h-full absolute top-0 left-0 transition-all duration-500 transform-style-preserve-3d ${flashcardFlipped ? 'rotate-y-180' : ''}`}>
-                      <div className="absolute w-full h-full backface-hidden bg-white/5 border border-white/10 rounded-xl p-4 flex items-center justify-center text-center shadow-lg group-hover:border-neon-purple/50 transition-colors">
-                        <p className="text-sm font-medium">{studyGuide.flashcards[currentFlashcard].front}</p>
-                      </div>
-                      <div className="absolute w-full h-full backface-hidden bg-neon-purple/10 border border-neon-purple/30 rounded-xl p-4 flex items-center justify-center text-center rotate-y-180 shadow-[0_0_15px_rgba(168,85,247,0.2)]">
-                        <p className="text-sm text-gray-200">{studyGuide.flashcards[currentFlashcard].back}</p>
-                      </div>
-                    </div>
+                     <div className="w-8 h-8 rounded-lg bg-pink-500/10 flex items-center justify-center mr-3 shrink-0">
+                       <Network size={16} className="text-pink-400" />
+                     </div>
+                     <div className="flex-1 min-w-0">
+                       <div className="text-sm font-medium text-white truncate">Bản đồ tư duy</div>
+                       <div className="text-xs text-gray-400">Vừa xong</div>
+                     </div>
+                     <button onClick={(e) => handleDeleteFeature(e, 'mindmap')} className="p-2 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                        <Trash2 size={16} />
+                     </button>
                   </div>
+                )}
 
-                  <div className="flex gap-2 mt-4 w-full">
-                    <button 
-                      onClick={() => { setFlashcardFlipped(false); setCurrentFlashcard(Math.max(0, currentFlashcard - 1)); }}
-                      disabled={currentFlashcard === 0}
-                      className="flex-1 bg-white/5 py-2 rounded-lg text-xs disabled:opacity-30"
-                    >
-                      Trước
-                    </button>
-                    <button 
-                      onClick={() => { setFlashcardFlipped(false); setCurrentFlashcard(Math.min(studyGuide.flashcards.length - 1, currentFlashcard + 1)); }}
-                      disabled={currentFlashcard === studyGuide.flashcards.length - 1}
-                      className="flex-1 bg-white/5 py-2 rounded-lg text-xs disabled:opacity-30"
-                    >
-                      Sau
-                    </button>
+                {studyGuide?.quiz && studyGuide.quiz.length > 0 && (
+                  <div 
+                    onClick={() => setActiveFeature('quiz')}
+                    className="flex items-center p-3 rounded-xl bg-[#282a2c] hover:bg-[#333537] transition-colors cursor-pointer group"
+                  >
+                     <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center mr-3 shrink-0">
+                       <Brain size={16} className="text-blue-400" />
+                     </div>
+                     <div className="flex-1 min-w-0">
+                       <div className="text-sm font-medium text-white truncate">Bài kiểm tra ({studyGuide.quiz.length} câu)</div>
+                       <div className="text-xs text-gray-400">Vừa xong</div>
+                     </div>
+                     <button onClick={(e) => handleDeleteFeature(e, 'quiz')} className="p-2 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                        <Trash2 size={16} />
+                     </button>
                   </div>
-                </div>
-              )}
+                )}
 
-              {activeFeature === 'mindmap' && (
-                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col">
-                  <h4 className="font-bold text-pink-400 mb-2 text-sm flex items-center gap-2">
-                    <Network size={16} /> Bản đồ tư duy
-                  </h4>
-                  <div className="text-sm text-gray-300 whitespace-pre-wrap mt-2 overflow-y-auto max-h-96 pr-2 custom-scrollbar">
-                    {studyGuide?.mindmap || "Chưa có bản đồ tư duy. Hãy click vào mũi tên bên cạnh để tạo một bản đồ tư duy tùy chỉnh!"}
+                {studyGuide?.flashcards && studyGuide.flashcards.length > 0 && (
+                  <div 
+                    onClick={() => setActiveFeature('flashcard')}
+                    className="flex items-center p-3 rounded-xl bg-[#282a2c] hover:bg-[#333537] transition-colors cursor-pointer group"
+                  >
+                     <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center mr-3 shrink-0">
+                       <Layers size={16} className="text-green-400" />
+                     </div>
+                     <div className="flex-1 min-w-0">
+                       <div className="text-sm font-medium text-white truncate">Thẻ ghi nhớ ({studyGuide.flashcards.length} thẻ)</div>
+                       <div className="text-xs text-gray-400">Vừa xong</div>
+                     </div>
+                     <button onClick={(e) => handleDeleteFeature(e, 'flashcard')} className="p-2 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                        <Trash2 size={16} />
+                     </button>
                   </div>
-                </div>
-              )}
-              
-              {activeFeature === 'quiz' && studyGuide?.quiz && (
-                <div className="bg-black/20 p-4 rounded-xl border border-white/5 animate-fade-in flex flex-col">
+                )}
 
-                    <div className="space-y-4">
-                      {studyGuide.quiz.map((q, idx) => (
-                        <div key={idx} className="bg-white/5 p-3 rounded-lg border border-white/10">
-                          <p className="font-semibold text-xs mb-2">{idx + 1}. {q.question}</p>
-                          <div className="space-y-1">
-                            {q.options.map((opt, oIdx) => {
-                              const isSelected = quizAnswers[idx] === oIdx;
-                              const isCorrect = q.answer === oIdx;
-                              let btnClass = "w-full text-left p-2 rounded border transition-all text-xs ";
-                              
-                              if (!quizSubmitted) {
-                                btnClass += isSelected ? "border-electric-blue bg-electric-blue/20 text-white" : "border-white/10 hover:bg-white/10 text-gray-400";
-                              } else {
-                                if (isCorrect) btnClass += "border-green-500 bg-green-500/20 text-white";
-                                else if (isSelected && !isCorrect) btnClass += "border-red-500 bg-red-500/20 text-white";
-                                else btnClass += "border-white/5 text-gray-500 opacity-50";
-                              }
+                {audioUrl && (
+                  <div 
+                    onClick={() => setActiveFeature('podcast')}
+                    className="flex items-center p-3 rounded-xl bg-[#282a2c] hover:bg-[#333537] transition-colors cursor-pointer group"
+                  >
+                     <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center mr-3 shrink-0">
+                       <AudioLines size={16} className="text-orange-400" />
+                     </div>
+                     <div className="flex-1 min-w-0">
+                       <div className="text-sm font-medium text-white truncate">Audio Overview</div>
+                       <div className="text-xs text-gray-400">Vừa xong</div>
+                     </div>
+                     <button onClick={(e) => handleDeleteFeature(e, 'podcast')} className="p-2 text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                        <Trash2 size={16} />
+                     </button>
+                  </div>
+                )}
+                
+                {!studyGuide?.mindmap && (!studyGuide?.quiz || studyGuide.quiz.length === 0) && (!studyGuide?.flashcards || studyGuide.flashcards.length === 0) && !audioUrl && generatingFeatures.length === 0 && (
+                   <div className="text-center p-6 border border-dashed border-white/10 rounded-xl text-gray-500 text-sm">
+                      Chưa có thẻ nào được tạo.
+                   </div>
+                )}
+              </div>
 
-                              return (
-                                <button 
-                                  key={oIdx} 
-                                  disabled={quizSubmitted}
-                                  onClick={() => setQuizAnswers({...quizAnswers, [idx]: oIdx})}
-                                  className={btnClass}
-                                >
-                                  {opt}
-                                </button>
-                              );
-                            })}
                           </div>
-                        </div>
-                      ))}
-                      {!quizSubmitted ? (
-                        <button 
-                          onClick={() => setQuizSubmitted(true)}
-                          disabled={Object.keys(quizAnswers).length !== studyGuide.quiz.length}
-                          className="bg-electric-blue text-white px-4 py-2 rounded-lg text-xs w-full disabled:opacity-50"
-                        >
-                          Nộp bài
-                        </button>
-                      ) : (
-                        <button 
-                          onClick={() => {setQuizAnswers({}); setQuizSubmitted(false);}}
-                          className="bg-white/10 text-white px-4 py-2 rounded-lg text-xs w-full"
-                        >
-                          Làm lại
-                        </button>
-                      )}
-                    </div>
-                </div>
-              )}
-
-            </div>
         </div>
       </div>
 

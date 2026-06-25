@@ -48,7 +48,14 @@ class VectorStoreManager:
         from src.utils.vram_orchestrator import get_orchestrator
         embedder = get_orchestrator().get_embedder()
         texts = [chunk["content"] for chunk in chunks]
-        embeddings = embedder.embed_documents(texts)
+        
+        # Chia nhỏ dữ liệu thành từng mẻ (Batching) để cứu VRAM 4GB
+        embeddings = []
+        batch_size = 16
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_embeddings = embedder.embed_documents(batch_texts)
+            embeddings.extend(batch_embeddings)
         
         points = []
         for i, chunk in enumerate(chunks):

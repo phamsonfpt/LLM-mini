@@ -33,15 +33,32 @@ def load_cross_encoder():
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"
         else:
-            device = "cpu"
+            try:
+                import torch_directml
+                if torch_directml.is_available():
+                    # CrossEncoder hỗ trợ kiểu chuỗi cho model_kwargs, nên ta lấy type
+                    device = "privateuseone" # Hoặc truyền trực tiếp obj torch_directml.device() khi khởi tạo
+            except ImportError:
+                device = "cpu"
+            if device != "privateuseone":
+                device = "cpu"
         
     logger.info(f"Loading Cross-Encoder model: {model_name} on {device}...")
     try:
-        model = CrossEncoder(
-            model_name,
-            device=device,
-            model_kwargs={"torch_dtype": torch.float16 if device != "cpu" else torch.float32}
-        )
+        if device == "privateuseone":
+            import torch_directml
+            dml_device = torch_directml.device()
+            model = CrossEncoder(
+                model_name,
+                device=dml_device,
+                model_kwargs={"torch_dtype": torch.float16}
+            )
+        else:
+            model = CrossEncoder(
+                model_name,
+                device=device,
+                model_kwargs={"torch_dtype": torch.float16 if device != "cpu" else torch.float32}
+            )
         logger.info("Cross-Encoder loaded successfully.")
         return model
     except Exception as exc:

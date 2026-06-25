@@ -146,7 +146,25 @@ def start_ollama_llm(config):
     return ollama_model
 
 
+import psutil
+
+def cleanup_ghost_processes():
+    print("[Launcher] Đang dọn dẹp các tiến trình cũ (nếu có)...")
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info.get('cmdline') or []
+            cmd_str = " ".join([str(c) for c in cmdline]).lower()
+            if 'uvicorn' in cmd_str and '8000' in cmd_str:
+                proc.kill()
+                print(f" -> Đã dọn dẹp Uvicorn cũ (PID: {proc.info['pid']})")
+            if ('llama-server' in proc.info.get('name', '').lower() or 'llama_cpp.server' in cmd_str) and '8080' in cmd_str:
+                proc.kill()
+                print(f" -> Đã dọn dẹp Llama-server cũ (PID: {proc.info['pid']})")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
 def main():
+    cleanup_ghost_processes()
     print("========================================")
     print("   KHỞI CHẠY NOTEBOOKLM MINI STANDALONE ")
     print("========================================")

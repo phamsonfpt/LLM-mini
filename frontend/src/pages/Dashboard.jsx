@@ -42,7 +42,7 @@ function Dashboard() {
       setShowModal(false);
       setNewTitle('');
       setApiKey('');
-      navigate(`/notebook/${id}`);
+      window.location.href = `/notebook/${id}`;
     } catch (err) {
       console.error(err);
       if (err.response) {
@@ -115,7 +115,7 @@ function Dashboard() {
           {notebooks.map(nb => (
             <div 
               key={nb.id}
-              onClick={() => navigate(`/notebook/${nb.id}`)}
+              onClick={() => { window.location.href = `/notebook/${nb.id}`; }}
               className="aspect-[4/3] rounded-2xl bg-white/5 border border-white/10 p-6 flex flex-col justify-end cursor-pointer hover:bg-white/10 transition-all hover:-translate-y-1 hover:shadow-xl relative overflow-hidden group"
             >
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent z-0"></div>

@@ -63,6 +63,14 @@ class VRAMOrchestrator:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            else:
+                try:
+                    import torch_directml
+                    # Thư viện DirectML tự động dọn khi rác biến mất, ta không gọi được hàm dọn thủ công
+                except ImportError:
+                    pass
         except ImportError:
             pass
     

@@ -20,6 +20,14 @@ def _resolve_device(device_str: str) -> str:
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 return "mps"
                 
+            # Hỗ trợ DirectML cho AMD/Intel trên Windows
+            try:
+                import torch_directml
+                if torch_directml.is_available():
+                    return torch_directml.device()
+            except ImportError:
+                pass
+                
             return "cpu"
         except ImportError:
             return "cpu"
