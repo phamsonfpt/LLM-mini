@@ -17,11 +17,25 @@ class VectorStoreManager:
         self.client = QdrantClient(path=str(settings.storage_dir))
         self.collection_name = settings.qdrant_collection
         
-        # Test 1 embedding để lấy vector size
-        from src.utils.vram_orchestrator import get_orchestrator
-        embedder = get_orchestrator().get_embedder()
-        dummy_vector = embedder.embed_query("test")
-        self.vector_size = len(dummy_vector)
+        # Xác định chiều dài vector dựa trên cấu hình tĩnh để tránh nạp model lên RAM khi khởi chạy DB
+        model_name = getattr(settings, "embedding_model", "").lower()
+        if "greennode" in model_name:
+            self.vector_size = 1024
+        elif "vietnamese-sbert" in model_name or "sbert" in model_name:
+            self.vector_size = 768
+        elif "bge-large" in model_name:
+            self.vector_size = 1024
+        elif "bge-small" in model_name:
+            self.vector_size = 384
+        elif "bge-base" in model_name:
+            self.vector_size = 768
+        else:
+            # Fallback nếu dùng model lạ
+            print(f"[Qdrant] Chưa rõ chiều dài Vector của model '{model_name}'. Đang tự động nạp model để phát hiện...")
+            from src.utils.vram_orchestrator import get_orchestrator
+            embedder = get_orchestrator().get_embedder()
+            dummy_vector = embedder.embed_query("test")
+            self.vector_size = len(dummy_vector)
         
         self._init_collection()
 

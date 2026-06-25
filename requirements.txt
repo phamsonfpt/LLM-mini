@@ -63,5 +63,5 @@ pyarrow<15.0.0
 # Fix: Chốt phiên bản llvmlite cho Python 3.13+
 llvmlite>=0.43.0
 
-# --- PyTorch Full Speed ---
+# --- PyTorch Apple Metal ---
 torch>=2.0.0

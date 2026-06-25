@@ -157,7 +157,7 @@ class ModelZooManager:
         if self.total_ram_gb >= 16:
             size = "medium"
             print("  🎙️ Whisper: Medium (Chính xác cao)")
-        elif self.total_ram_gb >= 8:
+        elif self.total_ram_gb > 8:
             size = "small"
             print("  🎙️ Whisper: Small (Cân bằng)")
         else:
@@ -173,7 +173,7 @@ class ModelZooManager:
         if effective_vram >= 8.0 and self.total_ram_gb >= 16:
             model = "llama3.2-vision"
             print("  👁️ Vision: Llama 3.2 Vision 11B (Siêu nét, cực nặng)")
-        elif effective_vram >= 4.0 and self.total_ram_gb >= 8:
+        elif effective_vram >= 4.0 and self.total_ram_gb > 8:
             model = "llava"
             print("  👁️ Vision: LLaVA 7B (Chi tiết tốt)")
         else:

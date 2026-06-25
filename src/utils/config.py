@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     hybrid_initial_k: int = Field(default=15, ge=1, le=100)
     hybrid_rerank_k: int = Field(default=5, ge=1, le=50)
     use_reranker: bool = True
+    use_query_rewriter: bool = False
     reranker_model: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RAG_RERANKER_MODEL")
     bm25_top_k: int = Field(default=15, ge=1, le=100)
     llama_server_url: str = "http://127.0.0.1:8080"

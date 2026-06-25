@@ -209,7 +209,8 @@ async def chat_endpoint(request: ChatRequest):
         intent = router.route(request.query)
         
         final_query = request.query
-        if intent != "chitchat":
+        from src.utils.config import settings
+        if intent != "chitchat" and getattr(settings, "use_query_rewriter", False):
             # --- SMART CACHE: Chạy Query Rewriter để sửa lỗi chính tả ---
             try:
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Đang phân tích và tối ưu câu hỏi...'})}\n\n"

@@ -29,7 +29,8 @@ class ContextualCompressor:
         if not chunks:
             return []
             
-        model = load_cross_encoder()
+        from src.utils.vram_orchestrator import get_orchestrator
+        model = get_orchestrator().get_reranker()
         if model is None:
             logger.warning("Cross-Encoder unavailable. Bỏ qua bước Compression.")
             return chunks

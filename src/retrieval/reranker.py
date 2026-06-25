@@ -72,7 +72,8 @@ class CrossEncoderReranker:
         if len(chunks) <= rerank_k:
             return chunks
 
-        model = load_cross_encoder()
+        from src.utils.vram_orchestrator import get_orchestrator
+        model = get_orchestrator().get_reranker()
         if model is None:
             logger.warning("Cross-Encoder unavailable. Trả về top chunks mặc định.")
             # Sort by existing score just in case

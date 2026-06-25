@@ -130,3 +130,12 @@
 {"timestamp": "2026-06-25T02:57:56.486063", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 1844ms", "event": "chat_stream", "latency_ms": 1844}
 {"timestamp": "2026-06-25T02:58:08.457128", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 2146ms", "event": "chat_stream", "latency_ms": 2146}
 {"timestamp": "2026-06-25T02:58:29.600249", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 2570ms", "event": "chat_stream", "latency_ms": 2570}
+{"timestamp": "2026-06-25T14:09:51.035463", "level": "INFO", "module": "telemetry", "message": "ingest_file completed in 2ms", "event": "ingest_file", "latency_ms": 2}
+{"timestamp": "2026-06-25T14:10:35.210623", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 39259ms", "event": "chat_stream", "latency_ms": 39259}
+{"timestamp": "2026-06-25T14:11:16.205488", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 40976ms", "event": "chat_stream", "latency_ms": 40976}
+{"timestamp": "2026-06-25T14:11:38.293214", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 22074ms", "event": "chat_stream", "latency_ms": 22074}
+{"timestamp": "2026-06-25T14:12:02.523603", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 24224ms", "event": "chat_stream", "latency_ms": 24224}
+{"timestamp": "2026-06-25T14:12:19.131917", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 16604ms", "event": "chat_stream", "latency_ms": 16604}
+{"timestamp": "2026-06-25T14:12:29.091374", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 13050ms", "event": "chat_stream", "latency_ms": 13050}
+{"timestamp": "2026-06-25T14:18:22.481063", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 7573ms", "event": "chat_stream", "latency_ms": 7573}
+{"timestamp": "2026-06-25T14:18:32.248915", "level": "INFO", "module": "telemetry", "message": "chat_stream stream completed in 2013ms", "event": "chat_stream", "latency_ms": 2013}

@@ -95,12 +95,13 @@ class VRAMOrchestrator:
             logger.info("[Orchestrator] ✅ Đã xả Whisper model.")
     
     def _unload_all_except(self, keep: str = None):
-        """Xả tất cả model trừ model được chỉ định."""
-        if keep != "embedder":
+        """Xả tất cả model trừ cấu hình chỉ định, tối ưu giữ Embedder & Reranker chạy song song."""
+        if keep == "whisper":
             self._unload_embedder()
-        if keep != "reranker":
             self._unload_reranker()
-        if keep != "whisper":
+        elif keep in ("embedder", "reranker"):
+            self._unload_whisper()
+        else:
             self._unload_whisper()
     
     # ===========================
@@ -169,12 +170,12 @@ class VRAMOrchestrator:
             try:
                 import whisper
                 with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    cache_dir = os.path.join(os.getcwd(), "cache", "whisper")
-                    os.makedirs(cache_dir, exist_ok=True)
-                    self._whisper_model = whisper.load_model(model_size, download_root=cache_dir)
-                    self._whisper_size = model_size
-                    logger.info(f"[Orchestrator] ✅ Whisper model ({model_size}) đã sẵn sàng.")
+                     warnings.simplefilter("ignore")
+                     cache_dir = os.path.join(os.getcwd(), "cache", "whisper")
+                     os.makedirs(cache_dir, exist_ok=True)
+                     self._whisper_model = whisper.load_model(model_size, download_root=cache_dir)
+                     self._whisper_size = model_size
+                     logger.info(f"[Orchestrator] ✅ Whisper model ({model_size}) đã sẵn sàng.")
             except Exception as e:
                 logger.error(f"[Orchestrator] ❌ Lỗi khi nạp Whisper: {e}")
                 self._whisper_model = None
@@ -200,11 +201,14 @@ class VRAMOrchestrator:
         with self._model_lock:
             self._unload_whisper()
     
-    def release_all(self):
+    def release_all(self, force: bool = False):
         """Xả toàn bộ model. Dùng khi shutdown hoặc cần giải phóng bộ nhớ khẩn cấp."""
         with self._model_lock:
-            self._unload_all_except(keep=None)
-            logger.info("[Orchestrator] 🧹 Đã xả toàn bộ model khỏi bộ nhớ.")
+            if force:
+                self._unload_embedder()
+                self._unload_reranker()
+            self._unload_whisper()
+            logger.info("[Orchestrator] 🧹 Đã dọn dẹp các model thích hợp khỏi bộ nhớ.")
     
     def status(self) -> dict:
         """Trả về trạng thái hiện tại của các model."""
