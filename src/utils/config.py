@@ -6,11 +6,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RAG_", extra="ignore")
+
+    # Resolve relative paths from the repository root rather than the process
+    # working directory. This keeps the API and CLI consistent when launched
+    # by Docker, an IDE, or a shell script from another directory.
+    project_root: Path = Path(__file__).resolve().parents[2]
     
     # Directory paths
     data_dir: Path = Path("data")
     storage_dir: Path = Path("storage/qdrant")
     bm25_dir: Path = Path("storage/bm25")
+    database_path: Path = Path("storage/notebooks.db")
     qdrant_collection_base: str = Field(default="rag_chunks", alias="RAG_QDRANT_COLLECTION")
 
     @property
@@ -23,16 +29,20 @@ class Settings(BaseSettings):
     top_k: int = Field(default=5, ge=1, le=64)
 
     # Embedding Configuration
-    embedding_model: str = "GreenNode/GreenNode-Embedding-Large-VN-Mixed-V1"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # LLM Providers Configuration
-    llm_provider: Literal["hf_local", "gemini", "vllm"] = "hf_local"
+    llm_provider: Literal[
+        "hf_local", "ollama", "lm_studio", "local_ai", "9router", "gemini",
+        "openai", "groq", "openrouter", "custom", "vllm"
+    ] = "ollama"
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
 
     # Local Hugging Face Model Parameters
     hf_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
     hf_device: str = "auto"  # Supports 'auto', 'cpu', 'cuda', 'mps' etc.
     hf_max_new_tokens: int = Field(default=2048, ge=1)
+    allow_model_download: bool = False
     
     # --- NEW: GGUF Model Parameters (Llama.cpp) ---
     gguf_model_repo: str = "Qwen/Qwen2.5-3B-Instruct-GGUF"
@@ -55,6 +65,11 @@ class Settings(BaseSettings):
     flashcards_default_count: int = Field(default=15, ge=1, le=100)
     api_url: str = "http://localhost:8000"
 
+    # Upload limits. The API also validates the extension before handing a
+    # file to a parser, which prevents accidental ingestion of huge binaries.
+    upload_dir: Path = Path("uploads")
+    max_upload_size_mb: int = Field(default=100, ge=1, le=2048)
+
     # --- NEW: Redis Semantic Cache ---
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -70,6 +85,7 @@ class Settings(BaseSettings):
     low_vram_mode: bool = Field(default=False, description="Use lightweight models for retrieval to save VRAM for LLM")
 
     # --- NEW: Hybrid Search & Reranking ---
+    enable_reranker: bool = False
     hybrid_initial_k: int = Field(default=15, ge=1, le=100)
     hybrid_rerank_k: int = Field(default=5, ge=1, le=50)
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
@@ -86,6 +102,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_config(self) -> "Settings":
+        for field_name in ("data_dir", "storage_dir", "bm25_dir", "database_path", "upload_dir"):
+            value = Path(getattr(self, field_name))
+            if not value.is_absolute():
+                value = self.project_root / value
+            setattr(self, field_name, value)
+
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size.")
         if self.llm_provider == "gemini" and not self.google_api_key:

@@ -5,6 +5,7 @@ In-memory BM25 keyword search with disk persistence.
 import json
 import logging
 import pickle
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from cachetools import LRUCache
@@ -66,13 +67,25 @@ class BM25Index:
 
     def add_documents(self, documents: List[BM25Document]) -> None:
         """Add documents to the index and rebuild."""
-        self._documents.extend(documents)
+        if not documents:
+            return
+        existing_ids = {str(doc.chunk_id) for doc in self._documents}
+        self._documents.extend(doc for doc in documents if str(doc.chunk_id) not in existing_ids)
         self.build(self._documents)
 
     def remove_document(self, filename: str) -> None:
         """Remove a specific document from the index and rebuild."""
         original_count = len(self._documents)
-        self._documents = [doc for doc in self._documents if doc.metadata.get("filename") != filename]
+        target = str(filename)
+        def belongs_to_file(doc: BM25Document) -> bool:
+            meta = doc.metadata or {}
+            candidates = (
+                meta.get("filename"), meta.get("source_file"),
+                meta.get("source"), meta.get("title"), meta.get("source_url")
+            )
+            return any(value and (str(value) == target or Path(str(value)).name == Path(target).name) for value in candidates)
+
+        self._documents = [doc for doc in self._documents if not belongs_to_file(doc)]
         if len(self._documents) < original_count:
             self.build(self._documents)
             logger.info("Removed %d chunks for %s from BM25 index.", original_count - len(self._documents), filename)
@@ -169,12 +182,24 @@ class BM25Index:
 # Module-level singletons per notebook
 _indexes: LRUCache = LRUCache(maxsize=10)
 
+
+def _notebook_index_dir(notebook_id: str) -> Path:
+    """Resolve an index directory for a single safe notebook identifier."""
+    value = str(notebook_id or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+        raise ValueError("notebook_id must contain only letters, digits, '_' or '-'.")
+    from src.utils.config import settings
+    root = settings.bm25_dir.resolve()
+    target = (root / value).resolve()
+    if target.parent != root:
+        raise ValueError("Invalid notebook index path.")
+    return target
+
 def get_bm25_index(notebook_id: str) -> BM25Index:
     """Get or create the BM25 index instance for a specific notebook."""
     global _indexes
     if notebook_id not in _indexes:
-        from src.utils.config import settings
-        notebook_dir = settings.bm25_dir / notebook_id
+        notebook_dir = _notebook_index_dir(notebook_id)
         index = BM25Index(persist_dir=notebook_dir)
         # Attempt to load persisted index
         index.load()
@@ -184,13 +209,16 @@ def get_bm25_index(notebook_id: str) -> BM25Index:
 def delete_bm25_folder(notebook_id: str):
     """Delete the BM25 index directory and remove from memory."""
     import shutil
-    from src.utils.config import settings
     global _indexes
     
     if notebook_id in _indexes:
         del _indexes[notebook_id]
         
-    notebook_dir = settings.bm25_dir / notebook_id
+    try:
+        notebook_dir = _notebook_index_dir(notebook_id)
+    except ValueError as exc:
+        logger.error("Refusing unsafe BM25 folder deletion: %s", exc)
+        return
     if notebook_dir.exists():
         try:
             shutil.rmtree(notebook_dir)

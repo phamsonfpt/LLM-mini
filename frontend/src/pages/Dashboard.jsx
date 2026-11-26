@@ -1,208 +1,719 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useDeferredValue } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Plus, Search, Check, Grid, List, Settings, LayoutGrid } from 'lucide-react';
-import axios from 'axios';
+import { 
+  BookOpen, Plus, Search, Check, Settings, Trash2, Cloud, Server,
+  Sun, Moon, Upload, Sparkles, RefreshCw, Activity, X
+} from 'lucide-react';
+import { requestJson, getErrorMessage } from '../lib/api';
+import useDialog from '../hooks/useDialog';
+import { motion, AnimatePresence } from 'motion/react';
+import { spring, transition, blur } from '@animate-ui/react/utils/motion';
+import SettingsModal from '../components/SettingsModal';
+import SystemHealthModal from '../components/SystemHealthModal';
 
 function Dashboard() {
   const navigate = useNavigate();
   const [notebooks, setNotebooks] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearch = useDeferredValue(searchQuery);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [createError, setCreateError] = useState('');
+  const [sortBy, setSortBy] = useState('newest');
   const [showModal, setShowModal] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSystemHealth, setShowSystemHealth] = useState(false);
+  const createDialogRef = useRef(null);
+  useDialog(createDialogRef, () => { if (!saving) setShowModal(false); }, showModal);
+
+  // Theme state
+  const [theme, setTheme] = useState(() => localStorage.getItem('notebooklm_theme') || 'dark');
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('notebooklm_theme', next);
+  };
+  const isDark = theme === 'dark';
+
+  // Import Notebook state
+  const importInputRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const data = await requestJson('/api/notebooks/import', { method: 'POST', body: JSON.stringify(parsed) });
+      if (!data?.notebook_id) throw new Error('Chưa nhận được sổ tay đã nhập. Hãy thử lại.');
+      navigate(`/notebook/${data.notebook_id}`);
+    } catch (err) {
+      setError('Không thể nhập sổ tay: ' + getErrorMessage(err));
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
+  // Seed Lao Cai Sample Notebook State
+  const [seedingLaoCai, setSeedingLaoCai] = useState(false);
+  const handleSeedLaoCai = async () => {
+    if (seedingLaoCai) return;
+    setSeedingLaoCai(true);
+    try {
+      const data = await requestJson('/api/notebooks/seed/lao-cai', { method: 'POST' });
+      if (!data?.notebook_id) throw new Error('Chưa tạo được sổ tay mẫu.');
+      navigate(`/notebook/${data.notebook_id}`);
+    } catch (err) {
+      setError('Không thể tải sổ tay mẫu: ' + getErrorMessage(err));
+    } finally {
+      setSeedingLaoCai(false);
+    }
+  };
+
+  // Create Notebook Form State
   const [newTitle, setNewTitle] = useState('');
-  const [backendType, setBackendType] = useState('local'); // 'local' or 'gemini'
-  const [apiKey, setApiKey] = useState('');
+  const [provider, setProvider] = useState('ollama'); // 'ollama', 'lm_studio', 'gemini', 'openai', 'groq'
+  const [selectedModel, setSelectedModel] = useState('');
+  const [customKey, setCustomKey] = useState('');
+  const [globalSettings, setGlobalSettings] = useState({});
+  const [localModels, setLocalModels] = useState([]);
 
   useEffect(() => {
     fetchNotebooks();
+    fetchSettingsAndModels();
   }, []);
 
   const fetchNotebooks = async () => {
+    setLoading(true);
+    setError('');
     try {
-      const res = await axios.get('/api/notebooks');
-      setNotebooks(res.data);
+      const data = await requestJson('/api/notebooks');
+      setNotebooks(data);
+    } catch (err) {
+      setError(getErrorMessage(err, 'Không thể tải sổ tay. Kiểm tra kết nối rồi thử lại.'));
+    } finally { setLoading(false); }
+  };
+
+  const fetchSettingsAndModels = async () => {
+    try {
+      const [settings, models] = await Promise.all([
+        requestJson('/api/settings'),
+        requestJson('/api/llm/local-models').catch(() => null),
+      ]);
+      setGlobalSettings(settings || {});
+      const ollamaModels = models?.ollama?.models || [];
+      setLocalModels(ollamaModels);
+      setSelectedModel(current => current || ollamaModels[0]?.name || settings.ollama_chat_model || 'qwen2.5:3b');
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handleCreate = async () => {
-    if (!newTitle.trim()) return;
-    if (backendType === 'gemini' && !apiKey.trim()) {
-      alert('Vui lòng nhập Gemini API Key!');
+  const handleOpenCreateModal = () => {
+    fetchSettingsAndModels();
+    setNewTitle('');
+    setCustomKey('');
+    setCreateError('');
+    setShowModal(true);
+  };
+
+  const handleDeleteNotebook = async (e, id) => {
+    e.stopPropagation();
+    if (!window.confirm("Bạn có chắc chắn muốn xóa Sổ tay này cùng toàn bộ tài liệu bên trong không?")) return;
+    try {
+      await requestJson(`/api/notebooks/${id}`, { method: 'DELETE' });
+      setNotebooks(prev => prev.filter(nb => nb.id !== id));
+    } catch (err) {
+      setError('Không thể xóa sổ tay: ' + getErrorMessage(err));
+    }
+  };
+
+  const handleCreate = async (event) => {
+    event?.preventDefault();
+    if (!newTitle.trim() || saving) return;
+    setCreateError('');
+
+    const finalKey = customKey.trim();
+    const keyName = provider === '9router' ? 'router9' : provider;
+    const keyConfigured = Boolean(globalSettings[`${keyName}_api_key_configured`]);
+
+    if (['gemini', 'openai', 'groq', 'openrouter'].includes(provider) && !finalKey && !keyConfigured) {
+      setCreateError(`Nhập API key cho ${provider.toUpperCase()} hoặc lưu khóa trong Cài đặt trước khi tạo sổ tay.`);
       return;
     }
     
-    const id = Date.now().toString();
+    const id = crypto.randomUUID();
+    const isPrivate = ['ollama', 'lm_studio'].includes(provider);
+
+    setSaving(true);
     try {
-      await axios.post('/api/notebooks', {
+      await requestJson('/api/notebooks', { method: 'POST', body: JSON.stringify({
         id,
-        title: newTitle,
-        is_private: backendType === 'local',
-        gemini_api_key: backendType === 'gemini' ? apiKey : null
-      });
+        title: newTitle.trim(),
+        is_private: isPrivate,
+        provider,
+        model_name: selectedModel || undefined,
+        api_key: finalKey || undefined
+      }) });
       setShowModal(false);
-      setNewTitle('');
-      setApiKey('');
       navigate(`/notebook/${id}`);
     } catch (err) {
       console.error(err);
-      if (err.response) {
-        alert('Lỗi tạo sổ ghi chú: ' + (err.response.data.detail || err.response.data.message || err.message));
-      } else {
-        alert('Không thể kết nối đến AI. Hệ thống có thể đang khởi động, vui lòng thử lại sau vài giây!');
-      }
+      setCreateError('Không thể tạo sổ tay: ' + getErrorMessage(err));
+    } finally { setSaving(false); }
+  };
+
+  const filteredNotebooks = notebooks.filter(nb => 
+    nb.title.toLowerCase().includes(deferredSearch.toLowerCase())
+  ).sort((a, b) => sortBy === 'name' ? a.title.localeCompare(b.title, 'vi') : new Date(b.created_at) - new Date(a.created_at));
+
+  const getProviderBadge = (nb) => {
+    const prov = (nb.provider || (nb.is_private ? 'ollama' : 'gemini')).toLowerCase();
+    if (prov === 'ollama') {
+      return {
+        label: `Ollama: ${nb.model_name || 'qwen2.5:3b'}`,
+        color: 'bg-green-500/20 text-green-400 border-green-500/30'
+      };
     }
+    if (prov === 'lm_studio') {
+      return {
+        label: `LM Studio: ${nb.model_name || 'Local'}`,
+        color: 'bg-teal-500/20 text-teal-300 border-teal-500/30'
+      };
+    }
+    if (prov === '9router') {
+      return {
+        label: `9Router: ${nb.model_name || 'Multi-model'}`,
+        color: 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+      };
+    }
+    if (prov === 'gemini') {
+      return {
+        label: `Gemini: ${nb.model_name || 'Flash'}`,
+        color: 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+      };
+    }
+    if (prov === 'groq') {
+      return {
+        label: `Groq: ${nb.model_name || 'Llama'}`,
+        color: 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+      };
+    }
+    return {
+      label: `${prov.toUpperCase()}: ${nb.model_name || ''}`,
+      color: 'bg-gray-500/20 text-gray-300 border-gray-500/30'
+    };
   };
 
   return (
-    <div className="flex flex-col font-sans selection:bg-blue-500/30 w-full">
+    <div data-theme={theme} className={`dashboard-shell flex flex-col min-h-screen font-sans w-full transition-colors ${
+      isDark ? 'bg-[#121316] text-white selection:bg-blue-500/30' : 'bg-[#f8fafc] text-slate-900 selection:bg-blue-200'
+    }`}>
+      {/* Hidden file input for notebook import */}
+      <input
+        type="file"
+        ref={importInputRef}
+        onChange={handleImportFile}
+        accept=".json"
+        className="hidden"
+      />
+
       {/* Header */}
-      <header className="flex justify-between items-center p-4 border-b border-white/5">
+      <header className={`flex flex-wrap gap-3 justify-between items-center px-4 sm:px-6 py-4 border-b transition-colors ${
+        isDark ? 'border-white/5 bg-[#14161a]' : 'border-slate-200 bg-white'
+      }`}>
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
-          <BookOpen className="text-white" size={24} />
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold shadow-md">
+            <BookOpen size={18} />
+          </div>
           <span className="font-semibold text-lg tracking-tight">NotebookLM Mini</span>
         </div>
-        <div className="flex items-center gap-4 text-sm font-medium">
-          <button className="flex items-center gap-2 hover:bg-white/10 px-3 py-1.5 rounded-lg transition-colors">
-            <Settings size={18} /> Cài đặt
+        <div className="flex items-center gap-3">
+          {/* System Health Diagnostics */}
+          <button 
+            onClick={() => setShowSystemHealth(true)}
+            className={`flex items-center gap-2 border px-3.5 py-1.5 rounded-xl text-sm font-medium transition cursor-pointer ${
+              isDark 
+                ? 'border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400' 
+                : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+            }`}
+            title="Chẩn đoán sức khỏe hệ thống AI & Vector DB"
+          >
+            <Activity size={16} />
+            <span className="hidden sm:inline">Kiểm tra hệ thống</span>
+          </button>
+
+          {/* Theme Switcher */}
+          <button 
+            onClick={toggleTheme}
+            className={`w-9 h-9 rounded-xl flex items-center justify-center transition border ${
+              isDark ? 'border-white/10 bg-white/5 hover:bg-white/10 text-amber-400' : 'border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+            title={isDark ? "Chuyển sang giao diện Sáng" : "Chuyển sang giao diện Tối"}
+          >
+            {isDark ? <Sun size={17} /> : <Moon size={17} />}
+          </button>
+
+          <button 
+            onClick={() => setShowSettings(true)}
+            className={`flex items-center gap-2 border px-3.5 py-1.5 rounded-xl text-sm font-medium transition ${
+              isDark ? 'border-white/10 bg-white/5 hover:bg-white/10 text-gray-200' : 'border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            <Settings size={16} /> <span>Cài đặt AI</span>
           </button>
         </div>
       </header>
 
       {/* Main Area */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-8">
+      <main id="main-content" className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8">
+        {error && <div role="alert" className="mb-6 p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 flex flex-wrap gap-3 items-center text-sm"><span className="flex-1 min-w-48">{error}</span><button onClick={fetchNotebooks} className="font-semibold underline">Thử lại</button><button onClick={() => setShowSystemHealth(true)} className="underline">Kiểm tra hệ thống</button></div>}
         
         {/* Toolbar */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex gap-6 text-sm font-medium text-gray-400">
-            <button className="text-white border-b-2 border-white pb-1">Tất cả</button>
-            <button className="hover:text-white transition-colors">Sổ ghi chú của tôi</button>
-            <button className="hover:text-white transition-colors">Sổ ghi chú nổi bật</button>
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Sổ tay của bạn</h1>
+            <p className="text-xs text-gray-400 mt-1">Quản lý và nghiên cứu thông tin dựa trên dữ liệu của riêng bạn</p>
           </div>
           
-          <div className="flex items-center gap-3">
-            <button className="w-10 h-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 transition">
-              <Search size={18} />
-            </button>
-            <div className="flex bg-white/5 rounded-full p-1">
-              <button className="p-2 bg-white/10 rounded-full text-white"><Check size={16} /></button>
-              <button className="p-2 text-gray-400 hover:text-white"><Grid size={16} /></button>
+          <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+            <div className="relative flex-1 sm:w-64">
+              <Search size={16} className="absolute left-3.5 top-3 text-gray-400" />
+              <input 
+                type="text" 
+                aria-label="Tìm sổ tay"
+                placeholder="Tìm kiếm sổ ghi chú..." 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className={`w-full border rounded-full pl-9 pr-4 py-2 text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500 ${
+                  isDark ? 'bg-white/5 border-white/10 text-white' : 'bg-white border-slate-200 text-slate-800'
+                }`}
+              />
             </div>
-            <button 
-              onClick={() => setShowModal(true)}
-              className="flex items-center gap-2 bg-white text-black px-4 py-2 rounded-full font-medium hover:bg-gray-200 transition-colors shadow-lg"
+
+            {/* Import Notebook Button */}
+            <motion.button 
+              type="button"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
+              transition={spring.press}
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-full font-semibold text-xs border transition shadow shrink-0 cursor-pointer ${
+                isDark ? 'bg-white/5 hover:bg-white/10 border-white/15 text-gray-200' : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+              title="Nhập sổ tay từ file backup JSON"
+            >
+              <Upload size={15} />
+              <span>{importing ? "Đang nhập..." : "Nhập .json"}</span>
+            </motion.button>
+
+            {/* Create Notebook Button */}
+            <motion.button 
+              type="button"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              transition={spring.press}
+              onClick={handleOpenCreateModal}
+              className="flex items-center gap-2 bg-blue-600 text-white hover:bg-blue-500 px-5 py-2 rounded-full font-semibold text-sm transition-colors shadow-lg shrink-0 cursor-pointer"
             >
               <Plus size={18} /> Tạo mới
-            </button>
+            </motion.button>
           </div>
         </div>
 
+        {/* Universal Multimodal AI Study Assistant Banner */}
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={spring.pop}
+          className={`mb-8 p-5 rounded-3xl border transition flex flex-col md:flex-row items-center justify-between gap-5 relative overflow-hidden shadow-lg ${
+            isDark 
+              ? 'bg-gradient-to-r from-blue-950/40 via-[#181d26] to-purple-950/40 border-blue-500/30 text-white' 
+              : 'bg-gradient-to-r from-blue-50 via-indigo-50/50 to-purple-50/50 border-blue-200 text-slate-800'
+          }`}
+        >
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-white shadow-md shrink-0">
+              <BookOpen size={24} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="font-bold text-base">Đọc tài liệu, hỏi rõ hơn, nhớ lâu hơn.</h2>
+                <span className="text-[11px] bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2.5 py-0.5 rounded-full font-semibold">
+                  Học từ nguồn của bạn
+                </span>
+              </div>
+              <p className={`text-xs mt-1 max-w-2xl leading-relaxed ${isDark ? 'text-gray-300' : 'text-slate-600'}`}>
+                Tạo sổ tay theo môn học, thêm tài liệu rồi hỏi đáp có trích dẫn. Khi cần ôn bài, tạo <strong>podcast</strong>, <strong>sơ đồ tư duy</strong>, <strong>thẻ học</strong> hoặc <strong>đề trắc nghiệm</strong>. Thời gian xử lý tùy tài liệu và mô hình AI.
+              </p>
+            </div>
+          </div>
+          
+          <motion.button
+            type="button"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            transition={spring.press}
+            onClick={handleSeedLaoCai}
+            disabled={seedingLaoCai}
+            className="w-full md:w-auto px-5 py-2.5 rounded-xl font-semibold text-xs bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 shrink-0 cursor-pointer disabled:opacity-50"
+          >
+            {seedingLaoCai ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} />}
+            <span>{seedingLaoCai ? 'Đang chuẩn bị tài liệu mẫu...' : 'Khám phá sổ tay mẫu'}</span>
+          </motion.button>
+        </motion.div>
+
+        {!loading && !notebooks.length && !error && <section className={`mb-7 p-5 sm:p-7 rounded-2xl border ${isDark ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'}`}>
+          <h2 className="text-lg font-semibold mb-2">Bắt đầu với sổ tay đầu tiên</h2>
+          <p className="text-sm opacity-70 leading-6">Một sổ tay dành cho một môn học hoặc chủ đề. Bạn có thể bổ sung tài liệu và đổi mô hình bất cứ lúc nào.</p>
+          <ol className="mt-4 grid sm:grid-cols-3 gap-3 text-sm"><li className="p-3 rounded-xl bg-blue-500/5">1. Tạo sổ tay</li><li className="p-3 rounded-xl bg-blue-500/5">2. Thêm tài liệu</li><li className="p-3 rounded-xl bg-blue-500/5">3. Hỏi đáp và ôn tập</li></ol>
+        </section>}
+        <div className="flex items-center justify-between mb-4 gap-3">
+          <p role="status" className="text-xs opacity-60">{loading ? 'Đang tải sổ tay...' : `${filteredNotebooks.length} sổ tay`}</p>
+          <label className="text-xs flex gap-2 items-center"><span className="opacity-60">Sắp xếp</span><select value={sortBy} onChange={event => setSortBy(event.target.value)} className={`p-2 rounded-lg border ${isDark ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'}`}><option value="newest">Mới nhất</option><option value="name">Tên A–Z</option></select></label>
+        </div>
+        {!loading && notebooks.length > 0 && filteredNotebooks.length === 0 && <p role="status" className="py-8 text-center opacity-70">Không có sổ tay phù hợp. <button onClick={() => setSearchQuery('')} className="text-blue-500 underline">Xóa tìm kiếm</button></p>}
         {/* Notebooks Grid */}
-        <h2 className="text-xl font-medium mb-6">Sổ ghi chú của bạn</h2>
-        
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {/* Create New Card */}
-          <div 
-            onClick={() => setShowModal(true)}
-            className="aspect-[4/3] rounded-2xl bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/20 transition-all cursor-pointer flex flex-col items-center justify-center group"
+          <motion.div 
+            whileHover={{ y: -4 }}
+            whileTap={{ scale: 0.985 }}
+            transition={spring.highlight}
+             onClick={handleOpenCreateModal}
+             role="button"
+             tabIndex={0}
+             onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handleOpenCreateModal(); } }}
+            className={`aspect-[4/3] rounded-2xl border border-dashed transition-colors cursor-pointer flex flex-col items-center justify-center group ${
+              isDark 
+                ? 'bg-white/[0.03] hover:bg-white/[0.07] border-white/15 hover:border-white/30' 
+                : 'bg-white hover:bg-slate-50 border-slate-300 hover:border-slate-400 shadow-sm'
+            }`}
           >
-            <div className="w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+            <div className="w-12 h-12 rounded-full bg-blue-500/20 text-blue-500 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
               <Plus size={24} />
             </div>
-            <span className="font-medium text-lg text-white">Tạo sổ ghi chú mới</span>
-          </div>
+            <span className={`font-semibold text-base ${isDark ? 'text-gray-200' : 'text-slate-800'}`}>Tạo sổ ghi chú mới</span>
+            <span className={`text-xs mt-1 ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>Chọn mô hình trên máy hoặc trực tuyến</span>
+          </motion.div>
 
           {/* Existing Notebooks */}
-          {notebooks.map(nb => (
-            <div 
-              key={nb.id}
-              onClick={() => navigate(`/notebook/${nb.id}`)}
-              className="aspect-[4/3] rounded-2xl bg-white/5 border border-white/10 p-6 flex flex-col justify-end cursor-pointer hover:bg-white/10 transition-all hover:-translate-y-1 hover:shadow-xl relative overflow-hidden group"
-            >
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent z-0"></div>
-              
-              <div className="relative z-10">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${nb.is_private ? 'bg-green-500' : 'bg-blue-500'}`}>
-                    {nb.is_private ? 'L' : 'G'}
-                  </div>
-                  <span className="text-xs font-medium text-gray-300">
-                    {nb.is_private ? 'Local Model' : 'Gemini API'}
+          {filteredNotebooks.map(nb => {
+            const badge = getProviderBadge(nb);
+            return (
+              <motion.div 
+                key={nb.id}
+                whileHover={{ y: -4 }}
+                whileTap={{ scale: 0.985 }}
+                transition={spring.highlight}
+                onClick={() => navigate(`/notebook/${nb.id}`)}
+                role="link"
+                tabIndex={0}
+                aria-label={`Mở sổ tay ${nb.title}`}
+                onKeyDown={event => { if (event.target === event.currentTarget && event.key === 'Enter') navigate(`/notebook/${nb.id}`); }}
+                className={`aspect-[4/3] rounded-2xl border p-5 flex flex-col justify-between cursor-pointer transition-shadow hover:shadow-xl relative overflow-hidden group ${
+                  isDark 
+                    ? 'bg-[#181a20] border-white/10 hover:border-white/25 text-white' 
+                    : 'bg-white border-slate-200 hover:border-slate-300 text-slate-800 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full border ${badge.color}`}>
+                    {badge.label}
                   </span>
+                  <button 
+                    onClick={(e) => handleDeleteNotebook(e, nb.id)}
+                    className={`opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus:opacity-100 p-2 rounded-lg transition ${
+                      isDark ? 'text-gray-400 hover:text-red-400 hover:bg-white/10' : 'text-slate-400 hover:text-red-500 hover:bg-slate-100'
+                    }`}
+                    title={`Xóa sổ tay ${nb.title}`}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
-                <h3 className="font-semibold text-xl text-white mb-1 line-clamp-2">{nb.title}</h3>
-                <p className="text-xs text-gray-400">{new Date(nb.created_at).toLocaleDateString()}</p>
-              </div>
-            </div>
-          ))}
+                
+                <div>
+                  <h3 className={`font-semibold text-lg mb-1.5 line-clamp-2 leading-snug ${isDark ? 'text-white' : 'text-slate-900'}`}>{nb.title}</h3>
+                  <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>{new Date(nb.created_at).toLocaleDateString('vi-VN')}</p>
+                </div>
+              </motion.div>
+            );
+          })}
         </div>
 
       </main>
 
       {/* Create Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm animate-fade-in">
-          <div className="bg-[#1C1F26] border border-white/10 rounded-2xl p-8 max-w-md w-full shadow-2xl">
-            <h3 className="text-2xl font-semibold mb-6">Tạo sổ ghi chú</h3>
+      <AnimatePresence>
+        {showModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={transition.overlay}
+            className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm p-4"
+            onClick={() => { if (!saving) setShowModal(false); }}
+          >
+            <motion.form
+              ref={createDialogRef}
+              onSubmit={handleCreate}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Tạo sổ tay mới"
+              aria-busy={saving}
+              tabIndex={-1}
+              initial={{ opacity: 0, scale: 0.94, y: 10, filter: blur.surface }}
+              animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
+              exit={{ opacity: 0, scale: 0.94, y: 10, filter: blur.surface }}
+              transition={spring.dialog}
+              onClick={(e) => e.stopPropagation()}
+              className={`create-dialog border rounded-2xl p-5 sm:p-6 max-w-lg w-full max-h-[90dvh] overflow-y-auto shadow-2xl ${isDark ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'}`}
+            >
+              <fieldset disabled={saving} className="space-y-5">
+              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                <h2 className="text-xl font-bold">Tạo sổ tay mới</h2>
+                <button type="button" onClick={() => setShowModal(false)} aria-label="Đóng tạo sổ tay" className="text-gray-400 p-2"><X size={18} /></button>
+              </div>
+              {createError && <p role="alert" className="p-3 rounded-xl bg-red-500/10 text-red-500 text-sm leading-relaxed">{createError}</p>}
             
-            <label className="block text-sm font-medium text-gray-400 mb-2">Tên sổ ghi chú</label>
-            <input 
-              type="text" 
-              value={newTitle}
-              onChange={e => setNewTitle(e.target.value)}
-              className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white mb-6 focus:outline-none focus:border-blue-500"
-              placeholder="VD: Nghiên cứu sinh học..."
-              autoFocus
-            />
-
-            <label className="block text-sm font-medium text-gray-400 mb-2">Chọn Bộ não AI (LLM)</label>
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div 
-                onClick={() => setBackendType('local')}
-                className={`p-4 rounded-xl border cursor-pointer transition-all ${backendType === 'local' ? 'border-green-500 bg-green-500/10' : 'border-white/10 bg-white/5 hover:border-white/30'}`}
-              >
-                <h4 className="font-semibold text-green-400 mb-1">AI Nội bộ (Auto-Tier)</h4>
-                <p className="text-xs text-gray-400">Tự động tải & chạy AI phù hợp cấu hình máy. Offline 100%.</p>
-              </div>
-              <div 
-                onClick={() => setBackendType('gemini')}
-                className={`p-4 rounded-xl border cursor-pointer transition-all ${backendType === 'gemini' ? 'border-blue-500 bg-blue-500/10' : 'border-white/10 bg-white/5 hover:border-white/30'}`}
-              >
-                <h4 className="font-semibold text-blue-400 mb-1">Gemini API</h4>
-                <p className="text-xs text-gray-400">Siêu nhanh, thông minh. Chỉ dùng cho data công khai.</p>
-              </div>
+            <div>
+              <label htmlFor="notebook-title" className="block text-xs font-semibold text-gray-300 mb-1.5">Tên sổ tay</label>
+              <input 
+                type="text" 
+                id="notebook-title"
+                required
+                maxLength={160}
+                value={newTitle}
+                onChange={e => setNewTitle(e.target.value)}
+                className="w-full bg-black/40 border border-white/15 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                placeholder="VD: Nghiên cứu sinh học, Ôn thi Luật..."
+                autoFocus
+              />
             </div>
 
-            {backendType === 'gemini' && (
-              <div className="mb-8 animate-fade-in">
-                <label className="block text-sm font-medium text-gray-400 mb-2">Google Gemini API Key</label>
-                <input 
-                  type="password" 
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500"
-                  placeholder="AIzaSy..."
-                />
-              </div>
-            )}
+            <div>
+              <p className="block text-xs font-semibold text-gray-300 mb-2">Chọn nơi xử lý tài liệu</p>
+              
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <button type="button"
+                  aria-pressed={provider === 'ollama'}
+                  onClick={() => {
+                    setProvider('ollama');
+                    setCustomKey('');
+                    setSelectedModel(localModels[0]?.name || globalSettings.ollama_chat_model || 'qwen2.5:3b');
+                  }}
+                  className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                    provider === 'ollama' 
+                      ? 'border-green-500 bg-green-500/10' 
+                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Server size={16} className="text-green-400" />
+                    <span className="font-semibold text-sm text-green-300">Ollama Local</span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 leading-tight">Chạy trên máy. Cần cài và mở Ollama.</p>
+                </button>
 
-            <div className="flex justify-end gap-3 mt-4">
+                <button type="button"
+                  aria-pressed={provider === 'gemini'}
+                  onClick={() => {
+                    setProvider('gemini');
+                    setCustomKey('');
+                    setSelectedModel(globalSettings.gemini_model || 'gemini-2.5-flash');
+                  }}
+                  className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                    provider === 'gemini' 
+                      ? 'border-blue-500 bg-blue-500/10' 
+                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Cloud size={16} className="text-blue-400" />
+                    <span className="font-semibold text-sm text-blue-300">Google Gemini</span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 leading-tight">Dùng Internet và API key của Google.</p>
+                </button>
+              </div>
+
+              {/* Provider Options Row */}
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('openai');
+                    setCustomKey('');
+                    setSelectedModel(globalSettings.openai_model || 'gpt-4o-mini');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    provider === 'openai' ? 'border-white bg-white/10 text-white' : 'border-white/10 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  OpenAI (ChatGPT)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('groq');
+                    setCustomKey('');
+                    setSelectedModel(globalSettings.groq_model || 'llama-3.3-70b-versatile');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    provider === 'groq' ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-white/10 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Groq (Siêu tốc)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('lm_studio');
+                    setCustomKey('');
+                    setSelectedModel(globalSettings.custom_model || 'local-model');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    provider === 'lm_studio' ? 'border-teal-500 bg-teal-500/10 text-teal-300' : 'border-white/10 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  LM Studio
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProvider('9router');
+                    setCustomKey('');
+                    setSelectedModel('gemini-2.5-flash');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    provider === '9router' ? 'border-orange-500 bg-orange-500/10 text-orange-300' : 'border-white/10 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  9Router Gateway
+                </button>
+              </div>
+
+              {/* Model selection based on provider */}
+              {provider === '9router' && (
+                <div className="bg-black/30 p-3 rounded-xl border border-white/10 space-y-2">
+                  <label className="block text-xs text-orange-300 font-medium">Chọn Model trong 9Router (Mới nhất):</label>
+                  <select
+                    value={selectedModel}
+                    onChange={e => setSelectedModel(e.target.value)}
+                    className="w-full bg-[#121316] border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-500"
+                  >
+                    <option value="kr/claude-sonnet-4.5">kr/claude-sonnet-4.5 (Claude 3.7 / 4.5 Sonnet ⭐)</option>
+                    <option value="kr/deepseek-3.2">kr/deepseek-3.2 (DeepSeek V3.2 🔥 Mới nhất)</option>
+                    <option value="kr/auto">kr/auto (Tự động định tuyến tối ưu)</option>
+                    <option value="kr/glm-5">kr/glm-5 (GLM 5.0)</option>
+                    <option value="kr/qwen3-coder-next">kr/qwen3-coder-next (Qwen 3 Coder Next)</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash (Google Gemini)</option>
+                  </select>
+                </div>
+              )}
+
+              {provider === 'ollama' && (
+                <div className="bg-black/30 p-3 rounded-xl border border-white/10 space-y-2">
+                  <label className="block text-xs text-gray-400 font-medium">Chọn mô hình trong Ollama:</label>
+                  {localModels.length > 0 ? (
+                    <select
+                      value={selectedModel}
+                      onChange={e => setSelectedModel(e.target.value)}
+                      className="w-full bg-[#121316] border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-green-500"
+                    >
+                      {localModels.map(m => (
+                        <option key={m.name} value={m.name}>
+                          {m.name} ({m.size_gb} GB)
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input 
+                      type="text" 
+                      value={selectedModel} 
+                      onChange={e => setSelectedModel(e.target.value)}
+                      placeholder="VD: qwen2.5:3b hoặc llama3.2"
+                      className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-green-500"
+                    />
+                  )}
+                  <p className="text-[11px] text-gray-500">
+                    {localModels.length > 0 ? `Đã phát hiện ${localModels.length} mô hình sẵn có trên máy.` : 'Không tìm thấy Ollama đang chạy, bạn vẫn có thể nhập tên model.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Cloud API Key field */}
+              {['gemini', 'openai', 'groq'].includes(provider) && (
+                <div className="bg-black/30 p-3 rounded-xl border border-white/10 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label htmlFor="notebook-key" className="text-xs text-gray-300 font-medium">
+                      {provider.toUpperCase()} API Key:
+                    </label>
+                    {globalSettings[`${provider}_api_key_configured`] && !customKey && (
+                      <span className="text-[11px] text-green-400 flex items-center gap-1">
+                        <Check size={12} /> Đã có Key trong Cài đặt
+                      </span>
+                    )}
+                  </div>
+                  <input 
+                    type="password" 
+                    id="notebook-key"
+                    autoComplete="off"
+                    value={customKey}
+                    onChange={e => setCustomKey(e.target.value)}
+                    placeholder={globalSettings[`${provider}_api_key_configured`] ? "Đang dùng key đã lưu (hoặc dán key mới)" : "Dán API Key vào đây..."}
+                    className="w-full bg-black/50 border border-white/15 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-white/10">
               <button 
+                type="button"
                 onClick={() => setShowModal(false)}
-                className="px-5 py-2.5 rounded-full text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+                className="px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-white/5 transition cursor-pointer"
               >
                 Hủy
               </button>
-              <button 
-                onClick={handleCreate}
-                disabled={!newTitle.trim() || (backendType === 'gemini' && !apiKey.trim())}
-                className="px-5 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg"
+              <motion.button 
+                type="submit"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                transition={spring.press}
+                disabled={!newTitle.trim() || saving}
+                className="px-5 py-2 rounded-xl text-xs font-semibold bg-white text-black hover:bg-gray-200 disabled:opacity-50 transition shadow-lg cursor-pointer"
               >
-                Tạo sổ ghi chú
-              </button>
+                {saving ? 'Đang tạo sổ tay...' : 'Tạo sổ tay và thêm tài liệu'}
+              </motion.button>
             </div>
-          </div>
-        </div>
+              </fieldset>
+          </motion.form>
+        </motion.div>
       )}
+    </AnimatePresence>
+
+      {/* Global Settings Modal */}
+      <SettingsModal 
+        isDark={isDark}
+        isOpen={showSettings} 
+        onClose={() => setShowSettings(false)} 
+        onSettingsSaved={() => {
+          fetchSettingsAndModels();
+        }}
+      />
+
+      {/* System Health Diagnostics Modal */}
+      <SystemHealthModal 
+        isDark={isDark}
+        isOpen={showSystemHealth}
+        onClose={() => setShowSystemHealth(false)}
+        onOpenSettings={() => setShowSettings(true)}
+      />
 
     </div>
   );

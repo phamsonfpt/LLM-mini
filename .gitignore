@@ -26,6 +26,7 @@ qdrant/*
 !qdrant/.gitkeep
 uploads/*
 !uploads/.gitkeep
+model_cache/
 
 # Executables and Heavy Binaries
 bin/
@@ -36,7 +37,8 @@ bin/
 
 # Frontend
 frontend/node_modules/
-frontend/dist/
+# Keep frontend/dist tracked so users don't need Node.js/npm on Windows
+!frontend/dist/
 frontend/.eslintcache
 
 # Large Model Files

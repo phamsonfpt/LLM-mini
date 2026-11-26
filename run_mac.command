@@ -1,97 +1,124 @@
 #!/bin/bash
-
 # ==============================================================================
-# NotebookLM-Mini 1-Click Run Script for macOS
+# Google NotebookLM Mini - 1-Click Launcher (macOS)
+# Tự động tạo môi trường ảo (.venv), cài đặt thư viện và khởi chạy máy chủ.
 # ==============================================================================
 
-# Exit immediately if a command exits with a non-zero status
-set -e
-
-echo "🚀 Khởi động NotebookLM-Mini cho macOS..."
-
-# Di chuyển đến thư mục chứa script
 cd "$(dirname "$0")"
+export PYTHONPATH="$(pwd)"
+export PYTHONUNBUFFERED=1
 
-# Hàm kiểm tra command có tồn tại
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+echo ""
+echo "========================================================================"
+echo "          🚀 NOTEBOOKLM MINI - KHỞI ĐỘNG HỆ THỐNG 1-CLICK (macOS)       "
+echo "========================================================================"
+echo ""
 
-# 1. Kiểm tra Python
-if ! command_exists python3; then
-    echo "❌ Lỗi: Không tìm thấy Python3. Vui lòng cài đặt Python (https://www.python.org/downloads/mac-osx/)"
+# 1. Tìm trình thông dịch Python phù hợp
+PY_CMD=""
+if command -v python3 &>/dev/null; then
+    PY_CMD="python3"
+elif command -v python &>/dev/null; then
+    PY_CMD="python"
+fi
+
+if [ -z "$PY_CMD" ]; then
+    echo "❌ LỖI: Không tìm thấy Python trên máy tính!"
+    echo "👉 Vui lòng cài đặt Python từ https://www.python.org/downloads/ hoặc dùng Homebrew: brew install python"
+    read -p "Nhấn Enter để thoát..."
     exit 1
 fi
 
-# 1.5 Cài đặt các công cụ hệ thống cần thiết qua Homebrew
-if command_exists brew; then
-    if ! command_exists ffmpeg; then
-        echo "📦 Đang cài đặt ffmpeg (để xử lý âm thanh)..."
-        brew install ffmpeg
+if ! "$PY_CMD" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "❌ Cần Python 3.11 trở lên. Đang có: $($PY_CMD --version)"
+    read -p "Nhấn Enter để thoát..."
+    exit 1
+fi
+
+echo "[1/4] Đã nhận diện Python: $($PY_CMD --version)"
+
+# 2. Thiết lập môi trường ảo Python (.venv)
+if [ ! -f ".venv/bin/python" ]; then
+    echo "[2/4] Chưa có môi trường ảo (.venv). Đang tự động khởi tạo..."
+    if ! "$PY_CMD" -m venv .venv; then
+        echo "❌ Không tạo được môi trường .venv. Cài module venv cho Python rồi thử lại."
+        read -p "Nhấn Enter để thoát..."
+        exit 1
     fi
-    if ! command_exists tesseract; then
-        echo "📦 Đang cài đặt Tesseract OCR (để nhận diện chữ trong ảnh)..."
-        brew install tesseract tesseract-lang
+    source .venv/bin/activate
+else
+    echo "[2/4] Đang kích hoạt môi trường ảo (.venv)..."
+    source .venv/bin/activate
+fi
+
+if ! python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "❌ .venv hiện có dùng Python cũ hơn 3.11. Đổi tên/xóa .venv rồi chạy lại launcher."
+    read -p "Nhấn Enter để thoát..."
+    exit 1
+fi
+
+# 3. Kiểm tra và tự động cài đặt thư viện
+echo "[3/4] Đang kiểm tra các gói thư viện dự án..."
+if ! python -c "import fastapi, uvicorn, qdrant_client, sentence_transformers, edge_tts, markitdown, pytesseract" &>/dev/null; then
+    echo ""
+    echo "========================================================================"
+    echo "📦 PHÁT HIỆN THIẾU THƯ VIỆN BACKEND!"
+    echo "⏳ Đang tự động cài đặt các thư viện từ requirements.txt..."
+    echo "💡 Quá trình này chỉ diễn ra 1 lần duy nhất trong lần khởi động đầu tiên."
+    echo "========================================================================"
+    echo ""
+    python -m pip install --upgrade pip || exit 1
+    if ! python -m pip install -r requirements.txt; then
+        echo "❌ Cài dependency thất bại. Kiểm tra log và kết nối mạng rồi chạy lại."
+        read -p "Nhấn Enter để thoát..."
+        exit 1
+    fi
+    echo "[3/4] Cài đặt thư viện hoàn tất!"
+else
+    echo "[3/4] Toàn bộ thư viện Backend đã đầy đủ và sẵn sàng."
+fi
+
+if curl -fsS "http://127.0.0.1:8000/api/system/ready" >/dev/null 2>&1; then
+    echo "❌ Ứng dụng đã chạy ở cổng 8000. Đóng phiên bản đó trước khi mở launcher mới."
+    read -p "Nhấn Enter để thoát..."
+    exit 1
+fi
+
+# 4. Kiểm tra giao diện Frontend
+if [ ! -f "frontend/dist/index.html" ]; then
+    echo "[4/4] Đang kiểm tra giao diện Frontend..."
+    if command -v npm &>/dev/null; then
+        echo "[4/4] Đang biên dịch giao diện React SPA..."
+        (cd frontend && npm run build) || exit 1
+    elif [ ! -f "frontend/dist/index.html" ]; then
+        echo "❌ Thiếu frontend/dist và không có npm để build. Cài Node.js LTS rồi thử lại."
+        read -p "Nhấn Enter để thoát..."
+        exit 1
     fi
 else
-    echo "⚠️ Cảnh báo: Homebrew chưa được cài đặt, bỏ qua tự động cài ffmpeg và tesseract."
+    echo "[4/4] Giao diện React SPA đã sẵn sàng."
 fi
 
-# 2. Kiểm tra và cài đặt uv (Trình quản lý package siêu tốc)
-if ! command_exists uv; then
-    echo "📦 Đang cài đặt uv (Công cụ quản lý môi trường siêu tốc)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-fi
+echo ""
+echo "========================================================================"
+echo "  🎉 KHỞI ĐỘNG HỆ THỐNG THÀNH CÔNG!"
+echo "  🌐 Địa chỉ ứng dụng: http://localhost:8000"
+echo "  💡 Trình duyệt sẽ tự động mở sau 1.5 giây..."
+echo "  🛑 Để dừng hệ thống, nhấn phím Ctrl + C trong cửa sổ Terminal này."
+echo "========================================================================"
+echo ""
 
-# 3. Khởi tạo môi trường ảo (nếu chưa có)
-if [ ! -d ".venv" ]; then
-    echo "🛠 Đang tạo môi trường ảo..."
-    uv venv
-fi
-
-# 4. Kích hoạt môi trường ảo
-source .venv/bin/activate
-
-# 5. Cài đặt các thư viện lõi
-echo "📥 Đang đồng bộ hóa thư viện..."
-uv pip install -r requirements.txt
-
-# 6. Cài đặt llama-cpp-python với cờ Metal cho Mac M-series (tối ưu tốc độ)
-echo "⚡ Đang kiểm tra/cài đặt Engine AI tối ưu cho máy Mac..."
-# Kiểm tra nếu chưa cài llama-cpp-python
-if ! python -c "import llama_cpp" 2>/dev/null; then
-    echo "🚀 Cài đặt Llama.cpp với cấu hình Apple Metal GPU..."
-    CMAKE_ARGS="-DGGML_METAL=on" uv pip install llama-cpp-python --no-cache-dir
-fi
-
-# 6.5 Quét phần cứng và tự động cài đặt Model Zoo
-echo "🔍 Đang quét cấu hình máy tính của bạn để đề xuất Model AI tối ưu..."
-python src/utils/hardware_profiler.py
-
-# 6.8 Xây dựng giao diện Frontend
-if command_exists npm; then
-    echo "📦 Đang kiểm tra và xây dựng giao diện người dùng (Frontend)..."
-    cd frontend
-    if [ ! -d "node_modules" ]; then
-        echo "📥 Đang cài đặt thư viện Node.js..."
-        npm install
+# Mở trình duyệt chỉ sau khi backend báo ready.
+(
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:8000/api/system/ready" 2>/dev/null | python -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") else 1)' 2>/dev/null; then
+      open "http://localhost:8000"
+      exit 0
     fi
-    if [ ! -d "dist" ]; then
-        echo "🏗 Đang biên dịch giao diện Web..."
-        npm run build
-    fi
-    cd ..
-else
-    echo "⚠️ Lỗi: Không tìm thấy lệnh 'npm'. Giao diện Web sẽ không hiển thị. Vui lòng cài đặt Node.js."
-fi
+    sleep 0.5
+  done
+  echo "⚠️ Backend chưa ready sau 30 giây; không tự mở trình duyệt."
+) &
 
-# 7. Khởi động hệ thống
-echo "✨ Bắt đầu chạy hệ thống..."
-echo "-> Mở trình duyệt Web tại: http://localhost:8000"
-
-# Đợi 2 giây cho Server Uvicorn khởi động, sau đó mở web
-(sleep 3 && open http://localhost:8000) &
-
-# Chạy Backend (chiếm màn hình chính)
-uvicorn src.api.api:app --host 127.0.0.1 --port 8000
+# 5. Khởi chạy máy chủ FastAPI Backend
+python -m uvicorn src.api.api:app --host 127.0.0.1 --port 8000

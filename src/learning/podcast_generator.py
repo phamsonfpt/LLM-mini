@@ -1,10 +1,18 @@
 import os
-import re
-import uuid
+import sys
+import time
+import shutil
+import platform
+import subprocess
 import logging
 import asyncio
-from ..llm.llm_client import LLMEngine
+import tempfile
+from pathlib import Path
+from typing import Optional, List, Tuple
+from ..llm.llm_client import LLMEngine, validate_generated_text
 from ..db.session_manager import SessionManager
+from ..utils.config import settings
+from ..utils.audio import is_valid_audio_file
 
 logger = logging.getLogger(__name__)
 
@@ -12,121 +20,246 @@ class PodcastGenerator:
     def __init__(self, llm_engine: LLMEngine, session_manager: SessionManager):
         self.llm = llm_engine
         self.db = session_manager
-        self.output_dir = "storage/podcasts"
+        self.output_dir = str(settings.project_root / "storage" / "podcasts")
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def generate_podcast(self, notebook_id: str, is_private: bool) -> str:
-        """Sinh Podcast MP3 dựa trên Study Guide."""
+    def generate_podcast(
+        self, 
+        notebook_id: str, 
+        is_private: bool = True, 
+        gemini_api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        focus_topic: Optional[str] = None,
+        style: Optional[str] = "fun",
+        custom_context: Optional[str] = None,
+        voice_mode: Optional[str] = "duo",
+        source_revision: Optional[int] = None
+    ) -> str:
+        """Sinh Podcast MP3 đa giọng đọc (Song ca Nam/Nữ, Độc thoại Nữ Hoài My, Nam Nam Minh, hoặc Chị Google) kèm khoảng nghỉ tự nhiên."""
         guide = self.db.get_study_guide(notebook_id)
-        if not guide:
-            raise ValueError("Chưa có Study Guide cho Notebook này.")
-            
-        summary = guide.get('summary', '')
-        faq = guide.get('faq', '')
+        summary = ""
+        if custom_context and custom_context.strip():
+            summary = custom_context.strip()
+        elif guide and guide.get('summary'):
+            summary = f"{guide.get('summary', '')}\n\n{guide.get('glossary', '')}"
+        else:
+            raise ValueError("Không có nội dung nguồn để tạo Podcast. Vui lòng chọn nguồn và thử lại.")
         
-        # 1. Sinh kịch bản bằng LLM Local
+        style_instructions = {
+            "fun": "Phong cách trò chuyện: Hài hước, sôi nổi, dí dỏm, sử dụng ngôn từ đời thường gần gũi, nhiều năng lượng.",
+            "academic": "Phong cách trò chuyện: Học thuật, phân tích chuyên sâu, đi thẳng vào bản chất vấn đề và logic chặt chẽ.",
+            "debate": "Phong cách trò chuyện: Tranh luận phản biện, một người nêu quan điểm/thắc mắc, người kia bổ sung hoặc phản biện sắc bén."
+        }
+        chosen_style = style_instructions.get(style, style_instructions["fun"])
+        topic_clause = f"\nCHỦ ĐỀ TRỌNG TÂM: Tập trung thảo luận sâu về '{focus_topic.strip()}'.\n" if focus_topic and focus_topic.strip() else ""
+
         prompt = (
-            f"Dưới đây là tài liệu tóm tắt:\n{summary}\n\nCác câu hỏi thường gặp:\n{faq}\n\n"
-            f"Hãy viết một kịch bản giao lưu Podcast ngắn (khoảng 5-8 câu) giữa 2 người (Host A - Nam, Host B - Nữ). "
-            f"Định dạng NGHIÊM NGẶT như sau, không viết thêm bất cứ giải thích nào khác:\n"
+            f"Dưới đây là nội dung tài liệu:\n{summary[:5000]}\n\n"
+            f"{topic_clause}"
+            f"{chosen_style}\n"
+            f"Hãy viết một kịch bản trò chuyện Podcast (khoảng 6-8 lượt thoại ngắn gọn, súc tích) giữa 2 người dẫn chương trình: "
+            f"MC Nam (A - Minh) và MC Nữ (B - My), thảo luận sinh động về nội dung trên.\n"
+            f"Định dạng BẮT BUỘC trên từng dòng như sau, không dùng markdown đậm/nghiêng ở tên nhân vật:\n"
             f"A: [Lời thoại của A]\n"
             f"B: [Lời thoại của B]\n"
         )
         
-        logger.info("Đang sinh kịch bản Podcast...")
-        script_raw = "".join(self.llm.generate(prompt, system_prompt="Bạn là biên kịch viết lời thoại Podcast chuyên nghiệp."))
+        logger.info(f"Đang sinh kịch bản Podcast cho notebook {notebook_id} (Focus: '{focus_topic}', Style: '{style}', Voice: '{voice_mode}')...")
+        generator = self.llm.generate(
+            prompt,
+            system_prompt="Bạn là biên kịch Podcast chuyên nghiệp. Chỉ xuất ra các dòng thoại bắt đầu bằng 'A:' hoặc 'B:'.",
+            is_private=is_private,
+            gemini_api_key=api_key or gemini_api_key,
+            provider=provider,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url
+        )
+        script_raw = validate_generated_text("".join(generator))
         
-        # 2. Parse kịch bản
-        lines = script_raw.split('\n')
         dialogues = []
-        for line in lines:
-            if line.startswith('A:') or line.startswith('Host A:'):
-                dialogues.append(('A', line.split(':', 1)[1].strip()))
-            elif line.startswith('B:') or line.startswith('Host B:'):
-                dialogues.append(('B', line.split(':', 1)[1].strip()))
+        if script_raw and not script_raw.startswith("⚠️") and "không thể kết nối" not in script_raw.lower():
+            for line in script_raw.split('\n'):
+                clean_line = line.strip().lstrip('*').lstrip('-').strip()
+                if clean_line.startswith(('A:', 'Host A:', 'Nam:', 'Minh:')):
+                    text_part = clean_line.split(':', 1)[1].strip().strip('*')
+                    if text_part:
+                        dialogues.append(('A', text_part))
+                elif clean_line.startswith(('B:', 'Host B:', 'Nữ:', 'My:')):
+                    text_part = clean_line.split(':', 1)[1].strip().strip('*')
+                    if text_part:
+                        dialogues.append(('B', text_part))
                 
         if not dialogues:
-            logger.warning("Không nhận diện được kịch bản, dùng kịch bản dự phòng.")
-            dialogues = [
-                ('A', 'Xin chào, có vẻ hệ thống AI vừa gặp lỗi khi viết kịch bản.'),
-                ('B', 'Vâng, chúng tôi sẽ sớm khắc phục.')
-            ]
-            
-        # 3. Tổng hợp giọng nói (Băng Kép)
-        output_file = os.path.join(self.output_dir, f"{notebook_id}.mp3")
-        
-        if is_private:
-            self._generate_offline(dialogues, output_file)
-        else:
-            asyncio.run(self._generate_online(dialogues, output_file))
-            
-        return output_file
+            raise ValueError("AI không trả về kịch bản Podcast hợp lệ. Vui lòng thử lại.")
 
-    def _generate_offline(self, dialogues, output_file):
-        """Sử dụng pyttsx3 cho chế độ 100% Offline (Airgapped)"""
-        logger.info("TTS Mode: OFFLINE (pyttsx3)")
-        import pyttsx3
-        from pydub import AudioSegment
-        
-        engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
-        
-        # Thử tìm giọng Nam và Nữ
-        voice_a = voices[0].id if len(voices) > 0 else None
-        voice_b = voices[1].id if len(voices) > 1 else voice_a
-        
-        audio_segments = []
-        temp_files = []
-        
-        for idx, (speaker, text) in enumerate(dialogues):
-            temp_file = f"temp_{uuid.uuid4().hex}.wav"
-            temp_files.append(temp_file)
-            
-            if speaker == 'A':
-                if voice_a: engine.setProperty('voice', voice_a)
-            else:
-                if voice_b: engine.setProperty('voice', voice_b)
-                
-            engine.save_to_file(text, temp_file)
-            engine.runAndWait()
-            
-            # Đọc bằng pydub
-            audio_segments.append(AudioSegment.from_wav(temp_file))
-            
-        # Nối file
-        final_audio = sum(audio_segments)
-        final_audio.export(output_file, format="mp3")
-        
-        # Dọn dẹp
-        for f in temp_files:
-            if os.path.exists(f): os.remove(f)
+        errors = []
+        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="podcast_") as staging_dir:
+            output_file = str(Path(staging_dir) / "audio.mp3")
+            methods = []
+            if voice_mode != "gtts":
+                methods.append(lambda: self._generate_with_edge_tts_native(dialogues, output_file, voice_mode=voice_mode))
+            methods.extend((lambda: self._generate_with_gtts(dialogues, output_file), lambda: self._generate_offline(dialogues, output_file)))
+            for synthesize in methods:
+                if source_revision is not None and self.db.get_source_revision(notebook_id) != source_revision:
+                    raise RuntimeError("Nguồn tài liệu đã thay đổi. Vui lòng tạo lại Podcast.")
+                try:
+                    synthesize()
+                    for suffix in (".mp3", ".wav"):
+                        candidate = Path(output_file).with_suffix(suffix)
+                        if is_valid_audio_file(candidate):
+                            return self.db.publish_podcast_audio(notebook_id, candidate, source_revision)
+                    raise RuntimeError("TTS không tạo được tệp âm thanh hợp lệ.")
+                except Exception as exc:
+                    errors.append(str(exc))
+                    for suffix in (".mp3", ".wav"):
+                        Path(output_file).with_suffix(suffix).unlink(missing_ok=True)
+        raise RuntimeError("Không thể tạo âm thanh Podcast: " + "; ".join(errors))
 
-    async def _generate_online(self, dialogues, output_file):
-        """Sử dụng edge-tts cho chế độ Public (API Edge siêu mượt)"""
-        logger.info("TTS Mode: ONLINE (edge-tts)")
+    def _generate_with_edge_tts_native(self, dialogues: List[Tuple[str, str]], output_file: str, voice_mode: str = "duo"):
+        """Sử dụng trực tiếp Python API của edge_tts bất đồng bộ (chạy song song các chunk, tốc độ siêu nhanh 3-5s)."""
         import edge_tts
-        from pydub import AudioSegment
         
-        voice_a = "vi-VN-NamMinhNeural" # Giọng Nam
-        voice_b = "vi-VN-HoaiMyNeural" # Giọng Nữ
-        
-        audio_segments = []
-        temp_files = []
-        
-        for idx, (speaker, text) in enumerate(dialogues):
-            temp_file = f"temp_{uuid.uuid4().hex}.mp3"
-            temp_files.append(temp_file)
+        voice_a = "vi-VN-NamMinhNeural"
+        voice_b = "vi-VN-HoaiMyNeural"
+
+        if voice_mode == "female":
+            voice_a = "vi-VN-HoaiMyNeural"
+            voice_b = "vi-VN-HoaiMyNeural"
+        elif voice_mode == "male":
+            voice_a = "vi-VN-NamMinhNeural"
+            voice_b = "vi-VN-NamMinhNeural"
+
+        temp_dir = os.path.join(self.output_dir, f"temp_{int(time.time()*1000)}")
+        os.makedirs(temp_dir, exist_ok=True)
+        chunk_files = []
+
+        async def _synthesize_all():
+            tasks = []
+            valid_chunks = []
+            for i, (speaker, text) in enumerate(dialogues):
+                if not text.strip():
+                    continue
+                voice = voice_a if speaker == 'A' else voice_b
+                chunk_path = os.path.join(temp_dir, f"chunk_{i:03d}.mp3")
+                comm = edge_tts.Communicate(text.strip(), voice, rate="-2%")
+                tasks.append(comm.save(chunk_path))
+                valid_chunks.append(chunk_path)
             
-            v = voice_a if speaker == 'A' else voice_b
-            communicate = edge_tts.Communicate(text, v)
-            await communicate.save(temp_file)
+            await asyncio.gather(*tasks)
+            return valid_chunks
+
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        chunk_files = executor.submit(lambda: asyncio.run(_synthesize_all())).result()
+                else:
+                    chunk_files = loop.run_until_complete(_synthesize_all())
+            except Exception:
+                chunk_files = asyncio.run(_synthesize_all())
+
+            # Lọc các file thực sự tồn tại
+            existing_chunks = [c for c in chunk_files if os.path.exists(c) and os.path.getsize(c) > 100]
+            if not existing_chunks:
+                raise RuntimeError("Edge-TTS không xuất được file âm thanh nào.")
+
+            # Ghép audio có khoảng lặng 450ms giữa 2 MC qua pydub
+            try:
+                from pydub import AudioSegment
+                combined = None
+                silence = AudioSegment.silent(duration=450)
+                for cp in existing_chunks:
+                    seg = AudioSegment.from_file(cp)
+                    combined = seg if combined is None else combined + silence + seg
+                if combined is not None:
+                    combined.export(output_file, format="mp3")
+            except Exception as pe:
+                logger.warning(f"Lỗi ghép pydub ({pe}), ghép trực tiếp luồng nhị phân...")
+                with open(output_file, "wb") as out_f:
+                    for cp in existing_chunks:
+                        with open(cp, "rb") as inf:
+                            out_f.write(inf.read())
+        finally:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _generate_with_gtts(self, dialogues: List[Tuple[str, str]], output_file: str):
+        """Tạo âm thanh qua Google Translate TTS (gTTS) - Giọng 'Chị Google' quen thuộc."""
+        from gtts import gTTS
+        temp_dir = os.path.join(self.output_dir, f"gtts_temp_{int(time.time()*1000)}")
+        os.makedirs(temp_dir, exist_ok=True)
+        chunk_files = []
+        try:
+            for i, (_, text) in enumerate(dialogues):
+                if not text.strip():
+                    continue
+                chunk_path = os.path.join(temp_dir, f"g_{i:03d}.mp3")
+                tts = gTTS(text=text.strip(), lang='vi', slow=False)
+                tts.save(chunk_path)
+                if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 100:
+                    chunk_files.append(chunk_path)
+            if not chunk_files:
+                raise RuntimeError("gTTS không sinh được file âm thanh")
             
-            audio_segments.append(AudioSegment.from_mp3(temp_file))
-            
-        # Nối file
-        final_audio = sum(audio_segments)
-        final_audio.export(output_file, format="mp3")
-        
-        # Dọn dẹp
-        for f in temp_files:
-            if os.path.exists(f): os.remove(f)
+            try:
+                from pydub import AudioSegment
+                combined = None
+                silence = AudioSegment.silent(duration=400)
+                for cp in chunk_files:
+                    seg = AudioSegment.from_file(cp)
+                    combined = seg if combined is None else combined + silence + seg
+                if combined is not None:
+                    combined.export(output_file, format="mp3")
+            except Exception:
+                with open(output_file, "wb") as out_f:
+                    for cp in chunk_files:
+                        with open(cp, "rb") as inf:
+                            out_f.write(inf.read())
+        finally:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _generate_offline(self, dialogues: List[Tuple[str, str]], output_file: str):
+        """Tạo âm thanh offline qua macOS say hoặc wav synthesized."""
+        if platform.system() == "Darwin" and shutil.which("say"):
+            temp_dir = os.path.join(self.output_dir, f"say_temp_{int(time.time()*1000)}")
+            os.makedirs(temp_dir, exist_ok=True)
+            chunk_files = []
+            try:
+                for i, (speaker, text) in enumerate(dialogues):
+                    if not text.strip():
+                        continue
+                    aiff_path = os.path.join(temp_dir, f"c_{i}.aiff")
+                    wav_path = os.path.join(temp_dir, f"c_{i}.wav")
+                    subprocess.run(["say", "-v", "Linh", "-o", aiff_path, text.strip()], check=True, timeout=15)
+                    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@44100", aiff_path, wav_path], check=True, timeout=10)
+                    if os.path.exists(wav_path):
+                        chunk_files.append(wav_path)
+                
+                if chunk_files:
+                    import wave
+                    wav_out = output_file.replace(".mp3", ".wav")
+                    with wave.open(wav_out, 'wb') as outfile:
+                        for idx, wf in enumerate(chunk_files):
+                            with wave.open(wf, 'rb') as w_in:
+                                if idx == 0:
+                                    outfile.setparams(w_in.getparams())
+                                outfile.writeframes(w_in.readframes(w_in.getnframes()))
+                    
+                    ffmpeg_bin = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+                    if os.path.exists(ffmpeg_bin):
+                        subprocess.run([ffmpeg_bin, "-y", "-i", wav_out, output_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=30)
+                    return
+            except Exception as e:
+                logger.warning(f"macOS say thất bại: {e}")
+            finally:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+        raise RuntimeError("TTS offline không khả dụng. Kiểm tra Edge-TTS/gTTS hoặc giọng đọc hệ thống macOS.")

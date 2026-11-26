@@ -1,14 +1,21 @@
 import sqlite3
 import os
 import json
+import logging
+import uuid
+from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
+from src.utils.config import settings
+
+logger = logging.getLogger(__name__)
+_GENERATION_OWNER = f"{os.getpid()}:{uuid.uuid4().hex}"
 
 class SessionManager:
-    """Quản lý CSDL SQLite cho Notebooks, tin nhắn và Study Guides."""
+    """Quản lý CSDL SQLite cho Notebooks, tin nhắn, Cài đặt hệ thống và Study Guides."""
     
-    def __init__(self, db_path: str = "storage/notebooks.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or str(settings.database_path)
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
         
@@ -19,29 +26,34 @@ class SessionManager:
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
-            # Bảng Notebooks (Chứa cơ chế bảo mật is_private)
+            # 1. Bảng Notebooks (hỗ trợ đa nhà cung cấp model: Local Ollama, LM Studio, Gemini, OpenAI, Groq...)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS notebooks (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     is_private BOOLEAN NOT NULL DEFAULT 1,
                     gemini_api_key TEXT,
+                    provider TEXT DEFAULT 'ollama',
+                    model_name TEXT DEFAULT '',
+                    api_key TEXT DEFAULT '',
+                    base_url TEXT DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
-            # Bảng Documents (Tài liệu tải lên)
+            # 2. Bảng Documents (Tài liệu tải lên)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     notebook_id TEXT,
                     filename TEXT NOT NULL,
+                    file_path TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (notebook_id) REFERENCES notebooks (id)
                 )
             ''')
             
-            # Bảng Messages (Tin nhắn Chat)
+            # 3. Bảng Messages (Tin nhắn Chat)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +66,7 @@ class SessionManager:
                 )
             ''')
             
-            # Bảng Study Guides
+            # 4. Bảng Study Guides
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS study_guides (
                     notebook_id TEXT PRIMARY KEY,
@@ -67,40 +79,212 @@ class SessionManager:
                     FOREIGN KEY (notebook_id) REFERENCES notebooks (id)
                 )
             ''')
+
+            # 5. Bảng App Settings (Lưu trữ cấu hình toàn cục: API Keys, Local Endpoints, Model mặc định)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
             
-            # Kiểm tra và thêm cột quiz, flashcards nếu bảng đã tồn tại nhưng chưa có cột (schema migration)
-            try:
-                cursor.execute("ALTER TABLE study_guides ADD COLUMN quiz TEXT")
-                cursor.execute("ALTER TABLE study_guides ADD COLUMN flashcards TEXT")
-            except sqlite3.OperationalError:
-                pass # Cột đã tồn tại
-            # Migration cho bảng notebooks
-            try:
-                cursor.execute("ALTER TABLE notebooks ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 1")
-            except sqlite3.OperationalError:
-                pass
+            # 6. Bảng Flashcard Progress (Spaced Repetition System - SRS)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS flashcard_progress (
+                    notebook_id TEXT,
+                    card_index INTEGER,
+                    ease_factor REAL DEFAULT 2.5,
+                    interval_days INTEGER DEFAULT 0,
+                    repetitions INTEGER DEFAULT 0,
+                    next_review_date TEXT,
+                    last_rating INTEGER DEFAULT 0,
+                    PRIMARY KEY (notebook_id, card_index),
+                    FOREIGN KEY (notebook_id) REFERENCES notebooks (id)
+                )
+            ''')
 
-            try:
-                cursor.execute("ALTER TABLE notebooks ADD COLUMN gemini_api_key TEXT")
-            except sqlite3.OperationalError:
-                pass
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS study_guide_jobs (
+                    notebook_id TEXT PRIMARY KEY,
+                    generation_id TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            
+            # Schema Migration tự động nếu các cột chưa tồn tại
+            migrations = [
+                ("study_guides", "quiz", "TEXT"),
+                ("study_guides", "flashcards", "TEXT"),
+                ("study_guides", "mindmap", "TEXT"),
+                ("study_guides", "timeline_outline", "TEXT"),
+                ("notebooks", "is_private", "BOOLEAN NOT NULL DEFAULT 1"),
+                ("notebooks", "gemini_api_key", "TEXT"),
+                ("notebooks", "provider", "TEXT DEFAULT 'ollama'"),
+                ("notebooks", "model_name", "TEXT DEFAULT ''"),
+                ("notebooks", "api_key", "TEXT DEFAULT ''"),
+                ("notebooks", "base_url", "TEXT DEFAULT ''"),
+                ("documents", "file_path", "TEXT"),
+                ("notebooks", "source_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ]
+            
+            for table, col, col_type in migrations:
+                try:
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                except sqlite3.OperationalError:
+                    pass # Cột đã tồn tại
+                    
+            conn.commit()
 
+    # --- API Cài đặt Toàn Cục (Global Settings) ---
+    def get_app_settings(self) -> Dict[str, Any]:
+        """Lấy toàn bộ cài đặt hệ thống."""
+        default_settings = {
+            "default_provider": os.getenv("RAG_LLM_PROVIDER", "ollama"),
+            "default_model": "qwen2.5:3b",
+            "ollama_base_url": os.getenv("RAG_OLLAMA_BASE_URL", "http://localhost:11434"),
+            "lm_studio_base_url": "http://localhost:1234/v1",
+            "gemini_api_key": "",
+            "gemini_model": "gemini-2.5-flash",
+            "openai_api_key": "",
+            "openai_model": "gpt-4o-mini",
+            "groq_api_key": "",
+            "groq_model": "llama-3.3-70b-versatile",
+            "openrouter_api_key": "",
+            "openrouter_model": "deepseek/deepseek-r1",
+            "router9_api_key": "",
+            "router9_base_url": "http://localhost:20128/v1",
+            "router9_model": "claude-3-5-sonnet",
+            "custom_base_url": "",
+            "custom_api_key": "",
+            "custom_model": ""
+        }
+        with self._get_conn() as conn:
+            cursor = conn.execute("SELECT key, value FROM app_settings")
+            stored_settings = dict(cursor.fetchall())
+            default_settings.update(stored_settings)
+
+        # Đọc bổ sung từ biến môi trường (Environment Variables / .env)
+        env_mappings = {
+            "default_provider": "RAG_LLM_PROVIDER",
+            "default_model": "RAG_DEFAULT_MODEL",
+            "ollama_base_url": "RAG_OLLAMA_BASE_URL",
+            "lm_studio_base_url": "RAG_LM_STUDIO_BASE_URL",
+            "router9_api_key": "ROUTER9_API_KEY",
+            "router9_base_url": "ROUTER9_BASE_URL",
+            "router9_model": "ROUTER9_MODEL",
+            "groq_api_key": "GROQ_API_KEY",
+            "gemini_api_key": "GEMINI_API_KEY",
+            "openai_api_key": "OPENAI_API_KEY",
+            "openrouter_api_key": "OPENROUTER_API_KEY"
+        }
+        for s_key, env_var in env_mappings.items():
+            if not stored_settings.get(s_key) and os.getenv(env_var):
+                default_settings[s_key] = os.getenv(env_var)
+
+        return default_settings
+
+    def save_app_settings(self, settings_dict: Dict[str, Any]):
+        """Lưu các cài đặt hệ thống vào SQLite."""
+        with self._get_conn() as conn:
+            for key, val in settings_dict.items():
+                if val is not None:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                        (key, str(val))
+                    )
             conn.commit()
 
     # --- API Quản lý Notebooks ---
-    def create_notebook(self, notebook_id: str, title: str = "Notebook mới", is_private: bool = True, gemini_api_key: Optional[str] = None):
+    def create_notebook(
+        self, 
+        notebook_id: str, 
+        title: str = "Notebook mới", 
+        is_private: bool = True, 
+        gemini_api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        model_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None
+    ):
+        # Thiết lập provider mặc định nếu chưa truyền
+        if not provider:
+            provider = "ollama" if is_private else "gemini"
+        actual_key = api_key or gemini_api_key or ""
+        
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO notebooks (id, title, is_private, gemini_api_key) VALUES (?, ?, ?, ?)",
-                (notebook_id, title, is_private, gemini_api_key)
+                """INSERT OR IGNORE INTO notebooks 
+                   (id, title, is_private, gemini_api_key, provider, model_name, api_key, base_url) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (notebook_id, title, is_private, gemini_api_key, provider, model_name or "", actual_key, base_url or "")
             )
+            conn.commit()
+
+    def update_notebook_settings(
+        self, 
+        notebook_id: str, 
+        title: Optional[str] = None,
+        provider: Optional[str] = None, 
+        model_name: Optional[str] = None, 
+        api_key: Optional[str] = None, 
+        base_url: Optional[str] = None,
+        is_private: Optional[bool] = None
+    ):
+        """Cập nhật cấu hình mô hình hoặc quyền riêng tư cho Notebook."""
+        updates = []
+        params = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        if provider is not None:
+            updates.append("provider = ?")
+            params.append(provider)
+        if model_name is not None:
+            updates.append("model_name = ?")
+            params.append(model_name)
+        if api_key is not None:
+            updates.append("api_key = ?")
+            params.append(api_key)
+            updates.append("gemini_api_key = ?")
+            params.append(api_key)
+        if base_url is not None:
+            updates.append("base_url = ?")
+            params.append(base_url)
+        if is_private is not None:
+            updates.append("is_private = ?")
+            params.append(is_private)
+            
+        if not updates:
+            return
+            
+        params.append(notebook_id)
+        query = f"UPDATE notebooks SET {', '.join(updates)} WHERE id = ?"
+        with self._get_conn() as conn:
+            conn.execute(query, tuple(params))
             conn.commit()
 
     def list_notebooks(self) -> List[Dict]:
         with self._get_conn() as conn:
-            cursor = conn.execute("SELECT id, title, is_private, gemini_api_key, created_at FROM notebooks ORDER BY created_at DESC")
+            cursor = conn.execute("""
+                SELECT id, title, is_private, gemini_api_key, provider, model_name, api_key, base_url, created_at 
+                FROM notebooks ORDER BY created_at DESC
+            """)
             rows = cursor.fetchall()
-            return [{"id": r[0], "title": r[1], "is_private": bool(r[2]), "gemini_api_key": r[3], "created_at": r[4]} for r in rows]
+            return [
+                {
+                    "id": r[0], 
+                    "title": r[1], 
+                    "is_private": bool(r[2]), 
+                    "gemini_api_key": r[3], 
+                    "provider": r[4] or ("ollama" if bool(r[2]) else "gemini"),
+                    "model_name": r[5] or "",
+                    "api_key": r[6] or r[3] or "",
+                    "base_url": r[7] or "",
+                    "created_at": r[8]
+                } for r in rows
+            ]
 
     def update_notebook_privacy(self, notebook_id: str, is_private: bool):
         with self._get_conn() as conn:
@@ -109,36 +293,199 @@ class SessionManager:
 
     def delete_notebook(self, notebook_id: str):
         with self._get_conn() as conn:
+            file_paths = [
+                row[0] for row in conn.execute(
+                    "SELECT file_path FROM documents WHERE notebook_id = ? AND file_path IS NOT NULL",
+                    (notebook_id,),
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM flashcard_progress WHERE notebook_id = ?", (notebook_id,))
             conn.execute("DELETE FROM study_guides WHERE notebook_id = ?", (notebook_id,))
+            conn.execute("DELETE FROM study_guide_jobs WHERE notebook_id = ?", (notebook_id,))
             conn.execute("DELETE FROM messages WHERE notebook_id = ?", (notebook_id,))
             conn.execute("DELETE FROM documents WHERE notebook_id = ?", (notebook_id,))
             conn.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
+            self._delete_generated_audio(notebook_id)
             conn.commit()
+
+        for file_path in file_paths:
+            self._delete_managed_upload(file_path)
+            
+        # Dọn dẹp chỉ mục BM25
+        try:
+            from ..retrieval.bm25_index import delete_bm25_folder
+            delete_bm25_folder(notebook_id)
+        except Exception as e:
+            logger.warning(f"Lỗi dọn dẹp BM25 khi xóa notebook {notebook_id}: {e}")
 
     def get_notebook_privacy(self, notebook_id: str) -> bool:
         with self._get_conn() as conn:
             cursor = conn.execute("SELECT is_private FROM notebooks WHERE id = ?", (notebook_id,))
             row = cursor.fetchone()
-            return bool(row[0]) if row else True # Mặc định là Private nếu không tìm thấy
+            return bool(row[0]) if row else True
 
-    def get_notebook(self, notebook_id: str) -> Dict:
+    def get_notebook(self, notebook_id: str) -> Optional[Dict]:
         with self._get_conn() as conn:
-            cursor = conn.execute("SELECT id, title, is_private, gemini_api_key, created_at FROM notebooks WHERE id = ?", (notebook_id,))
+            cursor = conn.execute("""
+                SELECT id, title, is_private, gemini_api_key, provider, model_name, api_key, base_url, created_at 
+                FROM notebooks WHERE id = ?
+            """, (notebook_id,))
             row = cursor.fetchone()
             if row:
-                return {"id": row[0], "title": row[1], "is_private": bool(row[2]), "gemini_api_key": row[3], "created_at": row[4]}
+                return {
+                    "id": row[0], 
+                    "title": row[1], 
+                    "is_private": bool(row[2]), 
+                    "gemini_api_key": row[3],
+                    "provider": row[4] or ("ollama" if bool(row[2]) else "gemini"),
+                    "model_name": row[5] or "",
+                    "api_key": row[6] or row[3] or "",
+                    "base_url": row[7] or "",
+                    "created_at": row[8]
+                }
             return None
 
     # --- API Quản lý Tài liệu ---
-    def add_document(self, notebook_id: str, filename: str):
+    def add_document(self, notebook_id: str, filename: str, file_path: Optional[str] = None):
         with self._get_conn() as conn:
-            conn.execute("INSERT INTO documents (notebook_id, filename) VALUES (?, ?)", (notebook_id, filename))
+            conn.execute("DELETE FROM documents WHERE notebook_id = ? AND filename = ?", (notebook_id, filename))
+            conn.execute(
+                "INSERT INTO documents (notebook_id, filename, file_path) VALUES (?, ?, ?)",
+                (notebook_id, filename, file_path),
+            )
+            self._invalidate_generated_artifacts(conn, notebook_id)
             conn.commit()
+
+    def get_source_revision(self, notebook_id: str) -> Optional[int]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT source_revision FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+            return row[0] if row else None
+
+    def publish_podcast_audio(self, notebook_id: str, candidate: Path, source_revision: Optional[int] = None) -> str:
+        if not notebook_id or len(notebook_id) > 128 or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in notebook_id):
+            raise ValueError("notebook_id không hợp lệ.")
+        destination = settings.project_root / "storage" / "podcasts" / f"{notebook_id}{candidate.suffix}"
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT source_revision FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+            if not row or (source_revision is not None and row[0] != source_revision):
+                raise ValueError("Nguồn tài liệu đã thay đổi. Vui lòng tạo lại Podcast.")
+            os.replace(candidate, destination)
+            other = destination.with_suffix(".wav" if candidate.suffix == ".mp3" else ".mp3")
+            other.unlink(missing_ok=True)
+        return str(destination)
+
+    @staticmethod
+    def _delete_generated_audio(notebook_id: str) -> None:
+        if not notebook_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in notebook_id):
+            return
+        for suffix in (".mp3", ".wav"):
+            path = settings.project_root / "storage" / "podcasts" / f"{notebook_id}{suffix}"
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Không thể xóa podcast cũ %s: %s", path, exc)
+
+    @staticmethod
+    def _invalidate_generated_artifacts(conn, notebook_id: str) -> None:
+        SessionManager._delete_generated_audio(notebook_id)
+        conn.execute("UPDATE notebooks SET source_revision = source_revision + 1 WHERE id = ?", (notebook_id,))
+        conn.execute("DELETE FROM study_guides WHERE notebook_id = ?", (notebook_id,))
+        conn.execute("DELETE FROM flashcard_progress WHERE notebook_id = ?", (notebook_id,))
+        conn.execute(
+            "INSERT OR REPLACE INTO study_guide_jobs VALUES (?, ?, 'not_found', NULL, ?)",
+            (notebook_id, uuid.uuid4().hex, datetime.now().isoformat()),
+        )
+
+    def start_study_guide_generation(self, notebook_id: str) -> str:
+        generation_id = f"{_GENERATION_OWNER}:{uuid.uuid4().hex}"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO study_guide_jobs VALUES (?, ?, 'generating', NULL, ?)",
+                (notebook_id, generation_id, datetime.now().isoformat()),
+            )
+        return generation_id
+
+    def fail_study_guide_generation(self, notebook_id: str, generation_id: str, error: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE study_guide_jobs SET status = 'error', error = ?, updated_at = ? "
+                "WHERE notebook_id = ? AND generation_id = ? AND status = 'generating'",
+                (error, datetime.now().isoformat(), notebook_id, generation_id),
+            )
+
+    def get_study_guide_status(self, notebook_id: str) -> Dict[str, Any]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT generation_id, status, error, updated_at FROM study_guide_jobs WHERE notebook_id = ?",
+                (notebook_id,),
+            ).fetchone()
+            has_guide = bool(conn.execute(
+                "SELECT 1 FROM study_guides WHERE notebook_id = ? AND COALESCE(summary, '') != ''", (notebook_id,),
+            ).fetchone())
+            owner_alive = True
+            if row and row[1] == "generating" and not (row[0] or "").startswith(f"{_GENERATION_OWNER}:"):
+                try:
+                    os.kill(int(row[0].split(":", 1)[0]), 0)
+                except (OSError, TypeError, ValueError):
+                    owner_alive = False
+            if row and row[1] == "generating" and not owner_alive:
+                error = "Tiến trình tạo cẩm nang đã bị gián đoạn. Vui lòng tạo lại."
+                self.fail_study_guide_generation(notebook_id, row[0], error)
+                row = (row[0], "error", error, row[3])
+        return {
+            "status": row[1] if row else ("completed" if has_guide else "not_found"),
+            "has_guide": has_guide,
+            "error": row[2] if row else None,
+            "generation_id": row[0] if row else None,
+            "updated_at": row[3] if row else None,
+        }
+
+    @staticmethod
+    def _delete_managed_upload(file_path: str) -> None:
+        """Delete only files whose resolved path remains inside uploads/."""
+        try:
+            from src.utils.config import settings
+            upload_root = settings.upload_dir.resolve()
+            candidate = Path(file_path).resolve()
+            candidate.relative_to(upload_root)
+            if candidate.is_file():
+                candidate.unlink()
+        except (OSError, ValueError) as exc:
+            logger.warning("Bỏ qua xóa upload ngoài thư mục quản lý: %s", exc)
+
+    def get_document_storage_path(self, notebook_id: str, filename: str) -> Optional[str]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT file_path FROM documents WHERE notebook_id = ? AND filename = ? ORDER BY id DESC LIMIT 1",
+                (notebook_id, filename),
+            ).fetchone()
+            return row[0] if row and row[0] else None
 
     def delete_document(self, notebook_id: str, filename: str):
         with self._get_conn() as conn:
-            conn.execute("DELETE FROM documents WHERE notebook_id = ? AND filename = ?", (notebook_id, filename))
+            file_paths = [
+                row[0] for row in conn.execute(
+                    "SELECT file_path FROM documents WHERE notebook_id = ? AND filename = ? AND file_path IS NOT NULL",
+                    (notebook_id, filename),
+                ).fetchall()
+            ]
+            deleted = conn.execute("DELETE FROM documents WHERE notebook_id = ? AND filename = ?", (notebook_id, filename))
+            if deleted.rowcount:
+                self._invalidate_generated_artifacts(conn, notebook_id)
             conn.commit()
+
+        for file_path in file_paths:
+            self._delete_managed_upload(file_path)
+            
+        # Cập nhật lại BM25 index
+        try:
+            from ..retrieval.bm25_index import get_bm25_index
+            bm25 = get_bm25_index(notebook_id)
+            bm25.remove_document(filename)
+            bm25.save()
+        except Exception as e:
+            logger.warning(f"Lỗi cập nhật BM25 khi xóa tài liệu {filename}: {e}")
 
     def get_documents(self, notebook_id: str) -> List[Dict]:
         with self._get_conn() as conn:
@@ -147,62 +494,350 @@ class SessionManager:
             return [{"id": r[0], "filename": r[1], "created_at": r[2]} for r in rows]
 
     # --- API Quản lý Tin nhắn ---
-    def save_message(self, notebook_id: str, role: str, content: str, citations: Optional[List[Dict]] = None):
+    def save_message(self, notebook_id: str, role: str, content: str, citations: Optional[List[Dict]] = None) -> int:
         citations_str = json.dumps(citations, ensure_ascii=False) if citations else None
         with self._get_conn() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO messages (notebook_id, role, content, citations) VALUES (?, ?, ?, ?)",
                 (notebook_id, role, content, citations_str)
             )
             conn.commit()
+            return cursor.lastrowid
 
     def get_chat_history(self, notebook_id: str) -> List[Dict]:
         with self._get_conn() as conn:
             cursor = conn.execute(
-                "SELECT role, content, citations FROM messages WHERE notebook_id = ? ORDER BY created_at ASC",
+                "SELECT id, role, content, citations, created_at FROM messages WHERE notebook_id = ? ORDER BY created_at ASC",
                 (notebook_id,)
             )
             rows = cursor.fetchall()
             history = []
             for r in rows:
-                cites = json.loads(r[2]) if r[2] else []
+                cites = json.loads(r[3]) if r[3] else []
                 history.append({
-                    "role": r[0],
-                    "content": r[1],
-                    "citations": cites
+                    "id": r[0],
+                    "role": r[1],
+                    "content": r[2],
+                    "citations": cites,
+                    "created_at": r[4]
                 })
             return history
 
-    # --- API Study Guide ---
-    def save_study_guide(self, notebook_id: str, summary: str, faq: str, glossary: str, quiz: str = None, flashcards: str = None):
+    def delete_message(self, notebook_id: str, message_id: int):
         with self._get_conn() as conn:
+            conn.execute("DELETE FROM messages WHERE notebook_id = ? AND id = ?", (notebook_id, message_id))
+            conn.commit()
+
+    def clear_chat_history(self, notebook_id: str):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM messages WHERE notebook_id = ?", (notebook_id,))
+            conn.commit()
+
+    # --- API Study Guide & Tri thức mở rộng ---
+    def save_study_guide(
+        self, 
+        notebook_id: str, 
+        summary: str, 
+        faq: str, 
+        glossary: str, 
+        quiz: Any = None, 
+        flashcards: Any = None,
+        mindmap: Any = None,
+        timeline_outline: Any = None,
+        generation_id: Optional[str] = None
+    ):
+        # Giữ lại mindmap và timeline_outline cũ nếu không được truyền mới
+        existing = self.get_study_guide(notebook_id)
+        if existing:
+            if mindmap is None:
+                mindmap = existing.get("mindmap")
+            if timeline_outline is None:
+                timeline_outline = existing.get("timeline_outline")
+
+        # Hỗ trợ nhận cả string JSON lẫn object Python (dict/list)
+        quiz_str = json.dumps(quiz, ensure_ascii=False) if isinstance(quiz, (list, dict)) else quiz
+        flashcards_str = json.dumps(flashcards, ensure_ascii=False) if isinstance(flashcards, (list, dict)) else flashcards
+        mindmap_str = json.dumps(mindmap, ensure_ascii=False) if isinstance(mindmap, (list, dict)) else mindmap
+        timeline_str = json.dumps(timeline_outline, ensure_ascii=False) if isinstance(timeline_outline, (list, dict)) else timeline_outline
+        
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone():
+                return False
+            if generation_id and not conn.execute(
+                "SELECT 1 FROM study_guide_jobs WHERE notebook_id = ? AND generation_id = ? AND status = 'generating'",
+                (notebook_id, generation_id),
+            ).fetchone():
+                return False
+            old_cards = conn.execute("SELECT flashcards FROM study_guides WHERE notebook_id = ?", (notebook_id,)).fetchone()
+            if not old_cards or old_cards[0] != flashcards_str:
+                conn.execute("DELETE FROM flashcard_progress WHERE notebook_id = ?", (notebook_id,))
             conn.execute(
-                "INSERT OR REPLACE INTO study_guides (notebook_id, summary, faq, glossary, quiz, flashcards) VALUES (?, ?, ?, ?, ?, ?)",
-                (notebook_id, summary, faq, glossary, quiz, flashcards)
+                """INSERT OR REPLACE INTO study_guides 
+                   (notebook_id, summary, faq, glossary, quiz, flashcards, mindmap, timeline_outline) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (notebook_id, summary, faq, glossary, quiz_str, flashcards_str, mindmap_str, timeline_str)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO study_guide_jobs VALUES (?, ?, 'completed', NULL, ?)",
+                (notebook_id, generation_id, datetime.now().isoformat()),
             )
             conn.commit()
+            return True
 
     def get_study_guide(self, notebook_id: str) -> Optional[Dict]:
         with self._get_conn() as conn:
-            cursor = conn.execute("SELECT summary, faq, glossary, quiz, flashcards FROM study_guides WHERE notebook_id = ?", (notebook_id,))
+            cursor = conn.execute(
+                "SELECT summary, faq, glossary, quiz, flashcards, mindmap, timeline_outline FROM study_guides WHERE notebook_id = ?", 
+                (notebook_id,)
+            )
             row = cursor.fetchone()
             if row:
-                import json
-                
                 quiz_data = None
                 flashcards_data = None
+                mindmap_data = None
+                timeline_data = None
+                
                 if row[3]:
-                    try: quiz_data = json.loads(row[3])
-                    except: pass
+                    try:
+                        quiz_data = json.loads(row[3])
+                    except Exception:
+                        quiz_data = row[3]
                 if row[4]:
-                    try: flashcards_data = json.loads(row[4])
-                    except: pass
+                    try:
+                        flashcards_data = json.loads(row[4])
+                    except Exception:
+                        flashcards_data = row[4]
+                if row[5]:
+                    try:
+                        mindmap_data = json.loads(row[5])
+                    except Exception:
+                        mindmap_data = row[5]
+                if row[6]:
+                    try:
+                        timeline_data = json.loads(row[6])
+                    except Exception:
+                        timeline_data = row[6]
                     
                 return {
                     "summary": row[0], 
                     "faq": row[1], 
                     "glossary": row[2],
                     "quiz": quiz_data,
-                    "flashcards": flashcards_data
+                    "flashcards": flashcards_data,
+                    "mindmap": mindmap_data,
+                    "timeline_outline": timeline_data
                 }
             return None
+
+    def save_mindmap(self, notebook_id: str, mindmap_data: Any, source_revision: Optional[int] = None):
+        mindmap_str = json.dumps(mindmap_data, ensure_ascii=False) if isinstance(mindmap_data, (list, dict)) else str(mindmap_data)
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT source_revision FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+            if not current or (source_revision is not None and current[0] != source_revision):
+                raise ValueError("Nguồn tài liệu đã thay đổi. Vui lòng tạo lại sơ đồ tư duy.")
+            conn.execute(
+                "INSERT INTO study_guides (notebook_id, mindmap) VALUES (?, ?) ON CONFLICT(notebook_id) DO UPDATE SET mindmap = ?",
+                (notebook_id, mindmap_str, mindmap_str)
+            )
+            conn.commit()
+
+    def save_timeline_outline(self, notebook_id: str, timeline_data: Any, source_revision: Optional[int] = None):
+        timeline_str = json.dumps(timeline_data, ensure_ascii=False) if isinstance(timeline_data, (list, dict)) else str(timeline_data)
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT source_revision FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
+            if not current or (source_revision is not None and current[0] != source_revision):
+                raise ValueError("Nguồn tài liệu đã thay đổi. Vui lòng tạo lại dòng thời gian.")
+            conn.execute(
+                "INSERT INTO study_guides (notebook_id, timeline_outline) VALUES (?, ?) ON CONFLICT(notebook_id) DO UPDATE SET timeline_outline = ?",
+                (notebook_id, timeline_str, timeline_str)
+            )
+            conn.commit()
+
+    # --- API Spaced Repetition System (SRS - Anki / SuperMemo-2) ---
+    def get_srs_progress(self, notebook_id: str) -> Dict[str, Any]:
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "SELECT card_index, ease_factor, interval_days, repetitions, next_review_date, last_rating FROM flashcard_progress WHERE notebook_id = ?",
+                (notebook_id,)
+            )
+            rows = cursor.fetchall()
+            cards_progress = {}
+            for r in rows:
+                cards_progress[r[0]] = {
+                    "card_index": r[0],
+                    "ease_factor": r[1],
+                    "interval_days": r[2],
+                    "repetitions": r[3],
+                    "next_review_date": r[4],
+                    "last_rating": r[5]
+                }
+            return cards_progress
+
+    def update_srs_progress(self, notebook_id: str, card_index: int, rating: int) -> Dict[str, Any]:
+        """
+        Cập nhật thuật toán SM-2:
+        rating: 1 (Lại/Again), 2 (Khó/Hard), 3 (Tốt/Good), 4 (Dễ/Easy)
+        """
+        from datetime import datetime, timedelta, timezone
+        
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            saved_cards = conn.execute("SELECT flashcards FROM study_guides WHERE notebook_id = ?", (notebook_id,)).fetchone()
+            cards = json.loads(saved_cards[0]) if saved_cards and saved_cards[0] else []
+            if not isinstance(cards, list) or type(card_index) is not int or not 0 <= card_index < len(cards) or rating not in {1, 2, 3, 4}:
+                raise ValueError("Thẻ nhớ hoặc đánh giá không hợp lệ. Vui lòng tải lại bộ thẻ.")
+            cursor = conn.execute(
+                "SELECT ease_factor, interval_days, repetitions FROM flashcard_progress WHERE notebook_id = ? AND card_index = ?",
+                (notebook_id, card_index)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                ease_factor, interval_days, reps = row[0], row[1], row[2]
+            else:
+                ease_factor, interval_days, reps = 2.5, 0, 0
+                
+            # Tính toán SuperMemo 2 rút gọn
+            if rating == 1: # Again
+                reps = 0
+                interval_days = 0
+                ease_factor = max(1.3, ease_factor - 0.2)
+                next_review = datetime.now(timezone.utc) + timedelta(minutes=1)
+            elif rating == 2: # Hard
+                reps = reps + 1
+                interval_days = 1 if interval_days <= 1 else int(interval_days * 1.2)
+                ease_factor = max(1.3, ease_factor - 0.15)
+                next_review = datetime.now(timezone.utc) + timedelta(days=interval_days)
+            elif rating == 3: # Good
+                reps = reps + 1
+                if reps == 1:
+                    interval_days = 1
+                elif reps == 2:
+                    interval_days = 6
+                else:
+                    interval_days = int(interval_days * ease_factor)
+                next_review = datetime.now(timezone.utc) + timedelta(days=interval_days)
+            else: # Easy (4)
+                reps = reps + 1
+                if reps == 1:
+                    interval_days = 3
+                else:
+                    interval_days = int(interval_days * ease_factor * 1.3)
+                ease_factor = ease_factor + 0.15
+                next_review = datetime.now(timezone.utc) + timedelta(days=interval_days)
+
+            next_review_str = next_review.isoformat()
+            
+            conn.execute(
+                """INSERT OR REPLACE INTO flashcard_progress 
+                   (notebook_id, card_index, ease_factor, interval_days, repetitions, next_review_date, last_rating)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (notebook_id, card_index, ease_factor, interval_days, reps, next_review_str, rating)
+            )
+            conn.commit()
+            
+            return {
+                "card_index": card_index,
+                "ease_factor": ease_factor,
+                "interval_days": interval_days,
+                "repetitions": reps,
+                "next_review_date": next_review_str,
+                "last_rating": rating
+            }
+
+    # --- API Xuất & Nhập Notebook (Export / Import) ---
+    def export_notebook_data(self, notebook_id: str) -> Optional[Dict[str, Any]]:
+        notebook = self.get_notebook(notebook_id)
+        if not notebook:
+            return None
+            
+        docs = self.get_documents(notebook_id)
+        messages = self.get_chat_history(notebook_id)
+        study_guide = self.get_study_guide(notebook_id)
+        srs = self.get_srs_progress(notebook_id)
+        
+        return {
+            "version": "1.0",
+            "notebook": notebook,
+            "documents": docs,
+            "messages": messages,
+            "study_guide": study_guide,
+            "srs_progress": srs,
+            "exported_at": datetime.now().isoformat()
+        }
+
+    def import_notebook_data(self, data: Dict[str, Any]) -> str:
+        nb_info = data.get("notebook", {})
+        if not isinstance(nb_info, dict) or not isinstance(nb_info.get("title", ""), str):
+            raise ValueError("Thông tin sổ tay không hợp lệ.")
+        for key in ("documents", "messages"):
+            if not isinstance(data.get(key, []), list) or any(not isinstance(item, dict) for item in data.get(key, [])):
+                raise ValueError(f"{key} phải là danh sách đối tượng.")
+        if any(not isinstance(doc.get("filename"), str) or not doc["filename"].strip() for doc in data.get("documents", [])):
+            raise ValueError("Tên nguồn tài liệu không hợp lệ.")
+        if any(msg.get("role") not in {"user", "assistant", "system"} or not isinstance(msg.get("content"), str) for msg in data.get("messages", [])):
+            raise ValueError("Tin nhắn trong sổ tay không hợp lệ.")
+        sg = data.get("study_guide")
+        if sg is not None and not isinstance(sg, dict):
+            raise ValueError("Cẩm nang phải là đối tượng JSON.")
+        if sg:
+            from src.learning.guide_generator import GuideGenerator
+            sg = dict(sg)
+            if sg.get("quiz") not in (None, []):
+                sg["quiz"] = GuideGenerator._validate_quiz(sg["quiz"])
+            if sg.get("flashcards") not in (None, []):
+                sg["flashcards"] = GuideGenerator._validate_flashcards(sg["flashcards"])
+            if any(value is not None and not isinstance(value, str) for value in (sg.get("summary"), sg.get("faq"), sg.get("glossary"))):
+                raise ValueError("Nội dung cẩm nang không hợp lệ.")
+        srs_data = data.get("srs_progress", {})
+        if not isinstance(srs_data, dict):
+            raise ValueError("Tiến độ thẻ nhớ phải là đối tượng JSON.")
+        validated_srs = []
+        for c_idx, c_info in srs_data.items():
+            if not isinstance(c_info, dict):
+                raise ValueError("Tiến độ thẻ nhớ không hợp lệ.")
+            card_index = int(c_info.get("card_index", c_idx))
+            if not sg or not 0 <= card_index < len(sg.get("flashcards") or []):
+                raise ValueError("Tiến độ tham chiếu thẻ nhớ không tồn tại.")
+            validated_srs.append((
+                card_index, float(c_info.get("ease_factor", 2.5)), int(c_info.get("interval_days", 0)),
+                int(c_info.get("repetitions", 0)), c_info.get("next_review_date", ""), int(c_info.get("last_rating", 0)),
+            ))
+        new_id = uuid.uuid4().hex
+        title = nb_info.get("title", "Notebook đã nhập") + " (Bản sao)"
+        
+        for key in ("provider", "model_name", "api_key", "base_url"):
+            if nb_info.get(key) is not None and not isinstance(nb_info[key], str):
+                raise ValueError(f"{key} phải là chuỗi.")
+        # Keep all imported SQLite records in one transaction.
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO notebooks (id, title, is_private, provider, model_name, api_key, base_url, source_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id, title, bool(nb_info.get("is_private", True)), nb_info.get("provider") or "ollama",
+                 nb_info.get("model_name") or "", nb_info.get("api_key") or "", nb_info.get("base_url") or "", len(data.get("documents", []))),
+            )
+            conn.executemany(
+                "INSERT INTO documents (notebook_id, filename) VALUES (?, ?)",
+                [(new_id, doc["filename"]) for doc in data.get("documents", [])],
+            )
+            conn.executemany(
+                "INSERT INTO messages (notebook_id, role, content, citations) VALUES (?, ?, ?, ?)",
+                [(new_id, msg["role"], msg["content"], json.dumps(msg.get("citations") or [], ensure_ascii=False)) for msg in data.get("messages", [])],
+            )
+            if sg:
+                conn.execute(
+                    "INSERT INTO study_guides (notebook_id, summary, faq, glossary, quiz, flashcards, mindmap, timeline_outline) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (new_id, sg.get("summary"), sg.get("faq"), sg.get("glossary"), *[
+                        json.dumps(sg.get(key), ensure_ascii=False) if sg.get(key) is not None else None
+                        for key in ("quiz", "flashcards", "mindmap", "timeline_outline")
+                    ]),
+                )
+            conn.executemany(
+                "INSERT INTO flashcard_progress (notebook_id, card_index, ease_factor, interval_days, repetitions, next_review_date, last_rating) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(new_id, *progress) for progress in validated_srs],
+            )
+
+        return new_id

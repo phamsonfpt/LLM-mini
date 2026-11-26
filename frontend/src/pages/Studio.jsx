@@ -1,129 +1,1272 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useEffectEvent, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Send, Bot, User, FileText, ChevronRight, Paperclip, Loader, Headphones, RefreshCw, BookOpen, Brain, Layers, X, Check, XCircle, Trash2, Link as LinkIcon, Plus, ArrowLeft } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { spring } from '@animate-ui/react/utils/motion';
+import { 
+  Send, Bot, User, FileText, ChevronRight, Paperclip, Loader, Headphones, 
+  RefreshCw, BookOpen, Brain, Layers, X, Check, Trash2,
+  Link as LinkIcon, Plus, ArrowLeft, Settings, Cpu, Cloud, Award, Sparkles,
+  Copy, Eye, SlidersHorizontal, FileDown, Sun, Moon, Mic, MicOff,
+  Search, HelpCircle, Network, Scale, Clock, Share2, Flame, ArrowUp, ArrowDown,
+  Square, ShieldAlert, ClipboardCheck, Volume2, VolumeX, Bookmark, BookmarkPlus, Shield,
+  PanelLeft, PanelLeftClose, PanelRight, PanelRightClose, ChevronDown, ChevronUp,
+  Activity, AlertCircle
+} from 'lucide-react';
+import SettingsModal from '../components/SettingsModal';
+import QuizletModal from '../components/QuizletModal';
+import MarkdownRenderer from '../components/MarkdownRenderer';
+import MindmapModal from '../components/MindmapModal';
+import DocCompareModal from '../components/DocCompareModal';
+import TimelineOutlineModal from '../components/TimelineOutlineModal';
+import ShortcutsModal from '../components/ShortcutsModal';
+import ShareModal from '../components/ShareModal';
+import ModelManagerModal from '../components/ModelManagerModal';
+import SystemHealthModal from '../components/SystemHealthModal';
+import QuizModal from '../components/studio/QuizModal';
+import EvalModal from '../components/studio/EvalModal';
+import GuideConfigModal from '../components/studio/GuideConfigModal';
+import PodcastConfigModal from '../components/studio/PodcastConfigModal';
+import DocPreviewModal from '../components/studio/DocPreviewModal';
+import SourceInspectorModal from '../components/studio/SourceInspectorModal';
+import CritiqueModal from '../components/studio/CritiqueModal';
+import NotesModal from '../components/studio/NotesModal';
+import PasteTextModal from '../components/studio/PasteTextModal';
+import { requestJson, getErrorMessage, readSSE, escapeHtml } from '../lib/api';
+import { getCustomModels } from '../lib/customModels';
+import useDialog from '../hooks/useDialog';
 
 function Studio() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [activeNotebook, setActiveNotebook] = useState(null);
+  const [notebookError, setNotebookError] = useState('');
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [studyGuide, setStudyGuide] = useState(null);
+  const [regeneratingGuide, setRegeneratingGuide] = useState(false);
+  const [guideStatus, setGuideStatus] = useState('not_found');
+  const [guideError, setGuideError] = useState('');
+  const [guidePollVersion, setGuidePollVersion] = useState(0);
   const [documents, setDocuments] = useState([]);
+  const [sourceSearch, setSourceSearch] = useState('');
   const [podcastGenerating, setPodcastGenerating] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   
+  // Document selection for chat & generation context
+  const [selectedDocs, setSelectedDocs] = useState(new Set());
+
+  // Sidebar Visibility & Persistence
+  const [showLeftSidebar, setShowLeftSidebar] = useState(() => {
+    const saved = localStorage.getItem('notebooklm_show_left_sidebar');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [showRightSidebar, setShowRightSidebar] = useState(() => {
+    const saved = localStorage.getItem('notebooklm_show_right_sidebar');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  // Studio tab state ('tools' | 'guide') & suggestions drawer toggle
+  const [studioTab, setStudioTab] = useState('tools');
+  const [showSuggestionsDrawer, setShowSuggestionsDrawer] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('notebooklm_show_left_sidebar', String(showLeftSidebar));
+  }, [showLeftSidebar]);
+
+  useEffect(() => {
+    localStorage.setItem('notebooklm_show_right_sidebar', String(showRightSidebar));
+  }, [showRightSidebar]);
+
+  // Settings & Model Switching State
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSystemHealth, setShowSystemHealth] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [availableLocalModels, setAvailableLocalModels] = useState([]);
+  const [showModelManagerModal, setShowModelManagerModal] = useState(false);
+  const [modelManagerInitialTab, setModelManagerInitialTab] = useState('recommend');
+  const [customSavedModels, setCustomSavedModels] = useState([]);
+
   // Quiz & Flashcard state
   const [showQuiz, setShowQuiz] = useState(false);
   const [showFlashcards, setShowFlashcards] = useState(false);
-  const [podcastUrl, setPodcastUrl] = useState(null);
-  const [currentFlashcard, setCurrentFlashcard] = useState(0);
-  const [flashcardFlipped, setFlashcardFlipped] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
+
+  // Evaluation state
   const [evaluating, setEvaluating] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
+  const [showEvalModal, setShowEvalModal] = useState(false);
 
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlError, setUrlError] = useState('');
+  const urlDialogRef = useRef(null);
+  useDialog(urlDialogRef, () => { if (!uploading) setShowUrlInput(false); }, showUrlInput);
   const [urlInputValue, setUrlInputValue] = useState('');
   const [uploadingDocs, setUploadingDocs] = useState([]);
 
+  // Paste Raw Text Modal state
+  const [showPasteTextModal, setShowPasteTextModal] = useState(false);
+  const [pasteTitle, setPasteTitle] = useState('');
+  const [pasteContent, setPasteContent] = useState('');
+
+  // Custom Quizlet & Study Guide generation state
+  const [showGuideConfigModal, setShowGuideConfigModal] = useState(false);
+  const [guideConfig, setGuideConfig] = useState({
+    quiz_count: 5,
+    flashcards_count: 5,
+    difficulty: 'medium',
+    focus_topic: ''
+  });
+
+  // Custom Podcast state
+  const [showPodcastModal, setShowPodcastModal] = useState(false);
+  const [podcastConfig, setPodcastConfig] = useState({
+    focus_topic: '',
+    style: 'fun',
+    voice_mode: 'duo'
+  });
+
+  // Document preview state
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+
+  // Message copy state
+  const [copiedMsgIdx, setCopiedMsgIdx] = useState(null);
+
+  // Theme state ('dark' | 'light')
+  const [theme, setTheme] = useState(() => localStorage.getItem('notebooklm_theme') || 'dark');
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    localStorage.setItem('notebooklm_theme', nextTheme);
+  };
+  const isDark = theme === 'dark';
+
+  // Mobile navigation tab ('docs' | 'chat' | 'studio')
+  const [mobileActiveTab, setMobileActiveTab] = useState('chat');
+
+  // Chat Search state
+  const [showChatSearch, setShowChatSearch] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+
+  // Chat Persona mode ('strict' | 'socratic' | 'critic')
+  const [chatPersona, setChatPersona] = useState('strict');
+
+  const PERSONA_CONFIGS = {
+    strict: {
+      id: 'strict',
+      name: 'Bám sát nguồn',
+      desc: 'Trả lời chính xác và chỉ dựa vào tài liệu được cung cấp, không suy diễn ngoài lề.',
+      icon: Shield,
+      prefix: '[Chế độ: Bám sát nguồn] Trả lời chính xác và chỉ dựa vào tài liệu được cung cấp, không suy diễn ngoài lề.\n\n'
+    },
+    socratic: {
+      id: 'socratic',
+      name: 'Gia sư Socratic',
+      desc: 'Đặt câu hỏi gợi mở, hướng dẫn tư duy từng bước.',
+      icon: Sparkles,
+      prefix: '[Chế độ: Gia sư Socratic] Hãy đóng vai một gia sư Socratic thông thái. Đặt câu hỏi gợi mở, phân tích tư duy từng bước và giúp người học tự khám phá câu trả lời dựa trên tài liệu.\n\n'
+    },
+    critic: {
+      id: 'critic',
+      name: 'Phản biện sâu',
+      desc: 'Phân tích đa chiều, chỉ ra các giả định, điểm mạnh và hạn chế trong tài liệu.',
+      icon: Flame,
+      prefix: '[Chế độ: Phản biện sâu] Hãy đóng vai chuyên gia phản biện học thuật sắc bén. Đánh giá đa chiều, chỉ ra các giả định ngầm, điểm mạnh và hạn chế trong tài liệu đối với câu hỏi sau.\n\n'
+    }
+  };
+
+  // TTS per message state & methods
+  const [speakingMsgIdx, setSpeakingMsgIdx] = useState(null);
+
+  const cleanTextForSpeech = (rawText) => {
+    if (!rawText) return '';
+    return rawText
+      .replace(/\[\^?\d+\]/g, '')
+      .replace(/```[\s\S]*?```/g, ' Đoạn mã. ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/[*_~#>]/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/\n+/g, '. ')
+      .trim();
+  };
+
+  const handleSpeakMessage = (text, idx) => {
+    if (!('speechSynthesis' in window)) {
+      showToast('Trình duyệt chưa hỗ trợ đọc văn bản. Bạn vẫn có thể sao chép nội dung.');
+      return;
+    }
+
+    if (speakingMsgIdx === idx) {
+      window.speechSynthesis.cancel();
+      setSpeakingMsgIdx(null);
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const cleanText = cleanTextForSpeech(text);
+    if (!cleanText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = 'vi-VN';
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+
+    utterance.onend = () => {
+      setSpeakingMsgIdx(null);
+    };
+    utterance.onerror = () => {
+      setSpeakingMsgIdx(null);
+    };
+
+    setSpeakingMsgIdx(idx);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Pinned Notes (Bảng Ghi chú Nghiên cứu) State
+  const [pinnedNotes, setPinnedNotes] = useState([]);
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [newNoteTitle, setNewNoteTitle] = useState('');
+  const [newNoteContent, setNewNoteContent] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const [isSynthesizingNotes, setIsSynthesizingNotes] = useState(false);
+  const [convertingNoteId, setConvertingNoteId] = useState(null);
+
+  // Toast Notification State
+  const [toastMsg, setToastMsg] = useState(null);
+  const toastTimeoutRef = useRef(null);
+  const podcastTimerRef = useRef(null);
+  const mountedRef = useRef(true);
+  const activeChatRef = useRef(null);
+  const stickToBottomRef = useRef(true);
+  const messageListRef = useRef(null);
+
+  const showToast = (msg, duration = 5000) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastMsg(msg);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMsg(null);
+    }, duration);
+  };
+
+  const fetchPinnedNotes = async (nbId) => {
+    if (!nbId) return;
+    try {
+      const data = await requestJson(`/api/notebooks/${nbId}/notes`);
+      if (mountedRef.current) setPinnedNotes(data.notes || []);
+    } catch (err) {
+      if (mountedRef.current) showToast('Không thể tải ghi chú: ' + getErrorMessage(err));
+    }
+  };
+
+  const handlePinNote = async (content, title = "Ghi chú", source = "manual") => {
+    const targetNbId = activeNotebook?.id || id;
+    if (!content?.trim() || !targetNbId) return false;
+    try {
+      const data = await requestJson(`/api/notebooks/${targetNbId}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, title, source })
+      });
+      setPinnedNotes(data.notes || []);
+      showToast('Đã lưu ghi chú.');
+      return true;
+    } catch (err) {
+      console.error("Lỗi khi ghim ghi chú:", err);
+      showToast('Không thể lưu ghi chú: ' + getErrorMessage(err));
+      return false;
+    }
+  };
+
+  const handleDeleteNote = async (noteId) => {
+    const targetNbId = activeNotebook?.id || id;
+    if (!targetNbId || !noteId) return;
+    try {
+      const data = await requestJson(`/api/notebooks/${targetNbId}/notes/${noteId}`, {
+        method: 'DELETE'
+      });
+      setPinnedNotes(data.notes || []);
+      showToast('Đã xóa ghi chú.');
+      return true;
+    } catch (err) {
+      console.error("Lỗi xóa ghi chú:", err);
+      showToast('Không thể xóa ghi chú: ' + getErrorMessage(err));
+      return false;
+    }
+  };
+
+  const handleSynthesizeNotes = async () => {
+    const targetNbId = activeNotebook?.id || id;
+    if (!targetNbId || pinnedNotes.length < 2 || isSynthesizingNotes) return false;
+    setIsSynthesizingNotes(true);
+    try {
+      const res = await fetch(`/api/notebooks/${targetNbId}/notes/synthesize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-notebook-id': targetNbId
+        }
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Không thể tổng hợp ghi chú');
+      }
+      const data = await res.json();
+      setCritiqueModal({
+        isOpen: true,
+        type: 'synthesis',
+        title: data.title || 'Báo cáo Tổng hợp Ghi chú Nghiên cứu',
+        content: data.markdown || '',
+        loading: false
+      });
+      setShowNotesModal(false);
+      showToast('Đã tổng hợp báo cáo từ ghi chú.');
+      return true;
+    } catch (err) {
+      console.error("Lỗi tổng hợp ghi chú:", err);
+      showToast(getErrorMessage(err, 'Không thể tổng hợp ghi chú.'));
+      return false;
+    } finally {
+      setIsSynthesizingNotes(false);
+    }
+  };
+
+  const handleConvertNoteToSource = async (note) => {
+    const targetNbId = activeNotebook?.id || id;
+    if (!targetNbId || !note || convertingNoteId !== null || uploading) return false;
+    setConvertingNoteId(note.id);
+    try {
+      const rawTitle = (note.title || 'Ghi chú').trim();
+      const docTitle = rawTitle.endsWith('.md') || rawTitle.endsWith('.txt') ? rawTitle : `${rawTitle}.md`;
+      const res = await fetch('/api/ingest/text', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-notebook-id': targetNbId
+        },
+        body: JSON.stringify({
+          notebook_id: targetNbId,
+          title: docTitle,
+          text: note.content
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Không thể nạp ghi chú thành nguồn');
+      }
+      await refreshSources();
+      showToast(`Đã thêm "${docTitle}" vào nguồn tài liệu.`);
+      return true;
+    } catch (err) {
+      console.error("Lỗi chuyển ghi chú thành nguồn:", err);
+      showToast(getErrorMessage(err, 'Không thể chuyển ghi chú thành nguồn.'));
+      return false;
+    } finally {
+      setConvertingNoteId(null);
+    }
+  };
+
+  const fetchDocuments = async () => {
+    const targetId = activeNotebook?.id || id;
+    if (!targetId) return;
+    const docs = await requestJson(`/api/notebooks/${targetId}/documents`);
+    setDocuments(docs);
+    return docs;
+  };
+
+  const refreshSources = async () => {
+    const docs = await fetchDocuments();
+    if (!mountedRef.current) return;
+    setSelectedDocs(new Set(docs.map(doc => doc.filename)));
+    setStudyGuide(null);
+    setGuideError('');
+    setGuidePollVersion(version => version + 1);
+    setMindmapData(null);
+    setTimelineData(null);
+    setComparisonResult('');
+    setAudioUrl(null);
+    setQuizAnswers({});
+    clearTimeout(podcastTimerRef.current);
+    setPodcastGenerating(false);
+    setQuizSubmitted(false);
+    setShowQuiz(false);
+    setShowFlashcards(false);
+  };
+
+  const requireSources = () => {
+    if (documents.length && selectedDocs.size) return true;
+    showToast(documents.length ? 'Chọn ít nhất một tài liệu làm nguồn trước khi tiếp tục.' : 'Thêm tài liệu để bắt đầu hỏi đáp và tạo học liệu.');
+    setMobileActiveTab('docs');
+    setShowLeftSidebar(true);
+    return false;
+  };
+
+  // Chat Search match indices & jump handlers
+  const matchedIndices = useMemo(() => {
+    if (!chatSearchQuery.trim()) return [];
+    const q = chatSearchQuery.toLowerCase();
+    const indices = [];
+    messages.forEach((m, idx) => {
+      if (m.content && m.content.toLowerCase().includes(q)) {
+        indices.push(idx);
+      }
+    });
+    return indices;
+  }, [messages, chatSearchQuery]);
+
+  useEffect(() => {
+    setCurrentMatchIdx(0);
+  }, [chatSearchQuery]);
+
+  const scrollToMatch = (matchIdx) => {
+    if (matchedIndices.length === 0) return;
+    const targetMsgIdx = matchedIndices[matchIdx];
+    const el = document.getElementById(`msg-${targetMsgIdx}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  const handleNextMatch = () => {
+    if (matchedIndices.length === 0) return;
+    const nextIdx = (currentMatchIdx + 1) % matchedIndices.length;
+    setCurrentMatchIdx(nextIdx);
+    scrollToMatch(nextIdx);
+  };
+
+  const handlePrevMatch = () => {
+    if (matchedIndices.length === 0) return;
+    const prevIdx = (currentMatchIdx - 1 + matchedIndices.length) % matchedIndices.length;
+    setCurrentMatchIdx(prevIdx);
+    scrollToMatch(prevIdx);
+  };
+
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef(null);
+  const voiceBaseTextRef = useRef('');
+  const chatInputRef = useRef(null);
+  const abortControllerRef = useRef(null);
+
+  // Mindmap state
+  const [showMindmapModal, setShowMindmapModal] = useState(false);
+  const [mindmapData, setMindmapData] = useState(null);
+  const [loadingMindmap, setLoadingMindmap] = useState(false);
+
+  // Document comparison state
+  const [showDocCompareModal, setShowDocCompareModal] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState('');
+  const [comparingDocs, setComparingDocs] = useState(false);
+
+  // Timeline & Outline state
+  const [showTimelineModal, setShowTimelineModal] = useState(false);
+  const [timelineData, setTimelineData] = useState(null);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
+
+  // Shortcuts & Share modals
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+
+  // Citation highlight snippet in preview
+  const [highlightSnippet, setHighlightSnippet] = useState(null);
+
+  // Source Inspector Modal State (Chunks viewer)
+  const [inspectDoc, setInspectDoc] = useState(null);
+  const [docChunks, setDocChunks] = useState([]);
+  const [loadingChunks, setLoadingChunks] = useState(false);
+  const [chunkSearch, setChunkSearch] = useState('');
+
+  // Critique & Action Plan State
+  const [critiqueModal, setCritiqueModal] = useState({ isOpen: false, type: '', title: '', content: '', loading: false });
+
+  // Suggested questions extracted from studyGuide.faq
+  const suggestedQuestions = useMemo(() => {
+    if (!studyGuide?.faq) return [];
+    const lines = studyGuide.faq.split('\n');
+    const questions = [];
+    for (const line of lines) {
+      let clean = line.trim()
+        .replace(/^#+\s*/, '')
+        .replace(/^\*+\s*/, '')
+        .replace(/^-\s*/, '')
+        .replace(/^[0-9]+[.)]\s*/, '')
+        .replace(/\*+/g, '')
+        .trim();
+      clean = clean.replace(/^[0-9]+[.)]\s*/, '').trim();
+      if (clean.endsWith('?') && clean.length > 8 && clean.length < 140) {
+        questions.push(clean);
+      }
+    }
+    return questions.slice(0, 4);
+  }, [studyGuide]);
+
   const messagesEndRef = useRef(null);
 
-  // Auto scroll
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  const onGlobalKeyDown = useEffectEvent((e) => {
+      if (e.defaultPrevented) return;
+      // Escape closes open modals or stops generation
+      if (e.key === 'Escape') {
+        if (loading) {
+          handleStopGenerating();
+          return;
+        }
+        setShowModelPicker(false);
+        setShowChatSearch(false);
+        setShowSettings(false);
+        setShowQuiz(false);
+        setShowFlashcards(false);
+        setShowEvalModal(false);
+        setShowGuideConfigModal(false);
+        setShowPodcastModal(false);
+        setPreviewDoc(null);
+        setShowMindmapModal(false);
+        setShowDocCompareModal(false);
+        setShowTimelineModal(false);
+        setShowShortcutsModal(false);
+        setShowShareModal(false);
+        setShowModelManagerModal(false);
+        setShowPasteTextModal(false);
+        setShowNotesModal(false);
+        setShowSystemHealth(false);
+        setShowUrlInput(false);
+        setInspectDoc(null);
+        setCritiqueModal(prev => ({ ...prev, isOpen: false }));
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          setSpeakingMsgIdx(null);
+        }
+        return;
+      }
+
+      // Check for Cmd/Ctrl modifier
+      const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (!isCmdOrCtrl) return;
+
+      if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        setShowLeftSidebar(prev => !prev);
+      } else if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault();
+        setShowRightSidebar(prev => !prev);
+      } else if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        setShowModelPicker(prev => !prev);
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        setShowChatSearch(prev => !prev);
+      } else if (e.key === '/') {
+        e.preventDefault();
+        chatInputRef.current?.focus();
+      } else if (e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        setShowSettings(prev => !prev);
+      } else if (e.shiftKey && (e.key === 'q' || e.key === 'Q')) {
+        e.preventDefault();
+        setShowFlashcards(prev => !prev);
+      }
+  });
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    const listener = event => onGlobalKeyDown(event);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
+
+  // Auto scroll
+  useEffect(() => {
+    if (stickToBottomRef.current) messagesEndRef.current?.scrollIntoView({ behavior: loading ? 'instant' : 'smooth', block: 'end' });
+  }, [messages, loading]);
 
   // Fetch data khi mount
   useEffect(() => {
+    mountedRef.current = true;
     if (!id) return;
-    
-    const fetchData = async () => {
+    fetchNotebookDetails();
+    fetchLocalModels();
+    return () => {
+      mountedRef.current = false;
+      abortControllerRef.current?.abort();
+      clearTimeout(podcastTimerRef.current);
+      clearTimeout(toastTimeoutRef.current);
+      recognitionRef.current?.abort();
+      window.speechSynthesis?.cancel();
+    };
+    // The route is keyed by notebook ID; initialization runs once per notebook.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const fetchNotebookDetails = async () => {
+    setNotebookError('');
+    try {
+      const nb = await requestJson(`/api/notebooks/${id}`);
+      if (!mountedRef.current) return;
+      setActiveNotebook(nb);
+      const [msgs, docs] = await Promise.all([
+        requestJson(`/api/notebooks/${nb.id}/messages`),
+        requestJson(`/api/notebooks/${nb.id}/documents`),
+      ]);
+      if (!mountedRef.current) return;
+      setMessages(msgs || []);
+      setDocuments(docs || []);
+      setSelectedDocs(new Set((docs || []).map(doc => doc.filename)));
+      setGuidePollVersion(version => version + 1);
+      void fetchPinnedNotes(nb.id);
+      const status = await requestJson(`/api/podcast/status/${nb.id}`).catch(() => null);
+      if (mountedRef.current && status?.has_audio && status.status !== 'generating') setAudioUrl(`/api/podcast/audio/${nb.id}`);
+    } catch (e) {
+      if (mountedRef.current) setNotebookError(getErrorMessage(e, 'Không thể tải sổ tay. Kiểm tra kết nối rồi thử lại.'));
+    }
+  };
+
+  const fetchLocalModels = async () => {
+    try {
+      setCustomSavedModels(getCustomModels());
+      const data = await requestJson('/api/llm/local-models');
+      setAvailableLocalModels(data?.ollama?.models || []);
+    } catch (e) {
+      console.error("Lỗi lấy local models:", e);
+    }
+  };
+
+  // Switch model on the fly for active notebook
+  const handleSwitchModel = async (newProvider, newModelName, newBaseUrl, newApiKey) => {
+    setShowModelPicker(false);
+    try {
+      const payload = {
+        provider: newProvider,
+        model_name: newModelName,
+        is_private: ['ollama', 'lm_studio', 'local_ai'].includes(newProvider)
+      };
+      if (newBaseUrl !== undefined) payload.base_url = newBaseUrl;
+      if (newApiKey !== undefined) payload.api_key = newApiKey;
+
+      const updated = await requestJson(`/api/notebooks/${activeNotebook.id}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setActiveNotebook(updated.notebook);
+      showToast(`Đã chuyển sang ${newModelName || newProvider}.`);
+      return true;
+    } catch (e) {
+      console.error("Lỗi đổi model:", e);
+      showToast('Không thể đổi mô hình: ' + getErrorMessage(e));
+      return false;
+    }
+  };
+
+  // Quản lý việc chọn/bỏ chọn tài liệu làm ngữ cảnh
+  const toggleSelectDoc = (filename) => {
+    setSelectedDocs(prev => {
+      const next = new Set(prev);
+      if (next.has(filename)) {
+        next.delete(filename);
+      } else {
+        next.add(filename);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllDocs = () => {
+    setSelectedDocs(new Set(documents.map(d => d.filename)));
+  };
+
+  const handleDeselectAllDocs = () => {
+    setSelectedDocs(new Set());
+  };
+
+  const notebookId = activeNotebook?.id;
+  useEffect(() => {
+    if (!notebookId || !documents.length) return;
+    const controller = new AbortController();
+    let timer;
+    let attempts = 0;
+    const poll = async () => {
       try {
-        const nbRes = await fetch('/api/notebooks');
-        const nbs = await nbRes.json();
-        const nb = nbs.find(n => n.id === id);
-        if (nb) {
-          setActiveNotebook(nb);
-          
-          const msgRes = await fetch(`/api/notebooks/${nb.id}/messages`);
-          const msgs = await msgRes.json();
-          if (msgs && msgs.length > 0) {
-            setMessages(msgs);
-          } else {
-            setMessages([{ role: 'assistant', content: `Xin chào! Bạn đang ở sổ tay "${nb.title}". Hãy tải tài liệu hoặc gửi link cho tôi nhé!`, citations: [] }]);
-          }
-
-          const guideRes = await fetch(`/api/notebooks/${nb.id}/study-guide`);
-          if (guideRes.ok) {
-            const guide = await guideRes.json();
+        const status = await requestJson(`/api/notebooks/${notebookId}/study-guide/status`, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setGuideStatus(status.status);
+        setGuideError(status.error || '');
+        setRegeneratingGuide(status.status === 'generating');
+        if (status.status === 'completed' || (status.has_guide && status.status !== 'generating')) {
+          const guide = await requestJson(`/api/notebooks/${notebookId}/study-guide`, { signal: controller.signal });
+          if (!controller.signal.aborted) {
             setStudyGuide(guide);
+            setQuizAnswers({});
+            setQuizSubmitted(false);
           }
+        } else if (status.status === 'generating') {
+          if (++attempts < 200) timer = setTimeout(poll, 3000);
+          else {
+            setRegeneratingGuide(false);
+            setGuideError('Tác vụ đang mất nhiều thời gian. Bấm kiểm tra lại để cập nhật tiến trình.');
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setRegeneratingGuide(false);
+        setGuideError(getErrorMessage(error));
+      }
+    };
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [notebookId, documents.length, guidePollVersion]);
 
-          const docRes = await fetch(`/api/notebooks/${nb.id}/documents`);
-          if (docRes.ok) {
-            const docs = await docRes.json();
-            setDocuments(docs);
+  const generateStudyGuide = async (config = {}) => {
+    if (!activeNotebook || regeneratingGuide || !requireSources()) return false;
+    setRegeneratingGuide(true);
+    setGuideError('');
+    try {
+      await requestJson(`/api/notebooks/${activeNotebook.id}/study-guide/regenerate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...config,
+          selected_documents: Array.from(selectedDocs),
+        })
+      });
+      setGuideStatus('generating');
+      setGuidePollVersion(version => version + 1);
+      setShowGuideConfigModal(false);
+      setShowQuiz(false);
+      setShowFlashcards(false);
+      showToast('Đang tạo cẩm nang. Bạn có thể tiếp tục hỏi đáp trong khi chờ.');
+      return true;
+    } catch (e) {
+      setRegeneratingGuide(false);
+      setGuideError(getErrorMessage(e));
+      showToast('Không thể tạo cẩm nang: ' + getErrorMessage(e));
+      return false;
+    }
+  };
+
+  const handleRegenerateStudyGuide = () => generateStudyGuide(guideConfig);
+
+  const handlePrintExam = () => {
+    if (!studyGuide?.quiz || studyGuide.quiz.length === 0) {
+      showToast('Chưa có câu hỏi để in. Hãy tạo cẩm nang trước.');
+      return;
+    }
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast('Cho phép trình duyệt mở cửa sổ mới rồi thử in lại.');
+      return;
+    }
+    
+    printWindow.opener = null;
+    const title = escapeHtml(activeNotebook?.title || 'BÀI KIỂM TRA ĐỊNH KỲ');
+    const letters = ['A', 'B', 'C', 'D'];
+    
+    const questionsHtml = studyGuide.quiz.map((q, idx) => `
+      <div style="margin-bottom: 18px; page-break-inside: avoid;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; font-size: 14px;">
+          Câu ${idx + 1}: ${escapeHtml(q.question)}
+        </p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-left: 15px; font-size: 13px;">
+          ${q.options.map((opt, oIdx) => `
+            <div><strong>${letters[oIdx]}.</strong> ${escapeHtml(opt)}</div>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+
+    const answersHtml = studyGuide.quiz.map((q, idx) => `
+      <div style="display: inline-block; width: 18%; margin: 4px 1%; border: 1px solid #ccc; padding: 4px 8px; text-align: center; font-size: 13px;">
+        <strong>Câu ${idx + 1}:</strong> <span style="color: #d9534f; font-weight: bold;">${letters[q.answer] || 'Chưa xác định'}</span>
+      </div>
+    `).join('');
+
+    const fullHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Đề thi - ${title}</title>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: "Times New Roman", Times, serif; margin: 40px; color: #111; line-height: 1.5; }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
+            .header-table td { vertical-align: top; }
+            .center { text-align: center; }
+            .bold { font-weight: bold; }
+            @media print {
+              body { margin: 15mm; }
+              .no-print { display: none; }
+              .page-break { page-break-before: always; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="no-print" style="margin-bottom: 20px; padding: 12px; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 13px;">💡 <strong>Hướng dẫn:</strong> Bấm nút bên phải hoặc dùng phím <code>Ctrl+P</code> (hoặc <code>Cmd+P</code>) để In trực tiếp hoặc Lưu thành file PDF.</span>
+            <button onclick="window.print()" style="padding: 8px 16px; background: #2563eb; color: #fff; font-weight: bold; border: none; border-radius: 6px; cursor: pointer;">🖨️ In Đề Thi Ngay</button>
+          </div>
+
+          <table class="header-table">
+            <tr>
+              <td class="center" style="width: 45%;">
+                <div class="bold" style="font-size: 13px;">BỘ / SỞ GIÁO DỤC VÀ ĐÀO TẠO</div>
+                <div class="bold" style="font-size: 13px;">TRƯỜNG THPT / ĐẠI HỌC ....................</div>
+                <div style="font-size: 12px;">Năm học: 2026 - 2027</div>
+              </td>
+              <td class="center" style="width: 55%;">
+                <div class="bold" style="font-size: 15px;">ĐỀ KIỂM TRA ĐỊNH KỲ / ÔN TẬP</div>
+                <div class="bold" style="font-size: 13px; text-transform: uppercase;">HỌC PHẦN: ${title}</div>
+                <div style="font-style: italic; font-size: 12px;">(Thời gian làm bài: 15 - 45 phút - Không kể thời gian phát đề)</div>
+              </td>
+            </tr>
+          </table>
+
+          <div style="margin-bottom: 20px; font-size: 13px; display: flex; justify-content: space-between; border-bottom: 1px dashed #666; padding-bottom: 8px;">
+            <div>Họ và tên học sinh / sinh viên: ............................................................................</div>
+            <div>Lớp: ......................... Điểm: ...............</div>
+          </div>
+
+          <div class="bold" style="margin-bottom: 15px; font-size: 14px;">PHẦN I: CÂU HỎI TRẮC NGHIỆM (${studyGuide.quiz.length} câu)</div>
+          
+          <div>
+            ${questionsHtml}
+          </div>
+
+          <div class="page-break" style="margin-top: 40px; border-top: 2px solid #000; padding-top: 25px;">
+            <div class="center bold" style="font-size: 16px; margin-bottom: 15px; text-transform: uppercase;">
+              ĐÁP ÁN VÀ THANG ĐIỂM (DÀNH CHO GIÁO VIÊN / GIẢNG VIÊN)
+            </div>
+            <div style="font-size: 13px; margin-bottom: 15px;">
+              Mỗi câu trắc nghiệm đúng được <strong>${(10 / studyGuide.quiz.length).toFixed(2)} điểm</strong> (Tổng điểm: 10.0 điểm).
+            </div>
+            <div style="display: flex; flex-wrap: wrap; margin-bottom: 25px;">
+              ${answersHtml}
+            </div>
+            <div style="font-style: italic; font-size: 12px; color: #555; text-align: center;">
+              Đề thi và thang điểm được khởi tạo tự động từ Trợ lý Trí tuệ Nhân tạo Đa phương thức phục vụ Dạy và Học.
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(fullHtml);
+    printWindow.document.close();
+  };
+
+  const handleGenerateCustomGuide = () => generateStudyGuide(guideConfig);
+
+  const generatePodcast = async () => {
+    if (!activeNotebook || podcastGenerating || !requireSources()) return false;
+    const targetId = activeNotebook.id;
+    clearTimeout(podcastTimerRef.current);
+    setPodcastGenerating(true);
+    try {
+      await requestJson('/api/podcast/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          notebook_id: activeNotebook.id,
+          focus_topic: podcastConfig.focus_topic,
+          style: podcastConfig.style,
+          voice_mode: podcastConfig.voice_mode || 'duo',
+          selected_documents: Array.from(selectedDocs)
+        })
+      });
+      setShowPodcastModal(false);
+      setAudioUrl(null);
+      let attempts = 0;
+      const pollAudio = async () => {
+        if (!mountedRef.current) return;
+        try {
+          const status = await requestJson(`/api/podcast/status/${targetId}`);
+          if (!mountedRef.current) return;
+          if (status.has_audio && status.status === 'completed') {
+            setAudioUrl(`/api/podcast/audio/${targetId}?t=${Date.now()}`);
+            setPodcastGenerating(false);
+            showToast('Podcast đã sẵn sàng.');
+            return;
           }
+          if (status.status === 'error') throw new Error(status.error || 'Không thể tạo âm thanh. Kiểm tra cài đặt giọng đọc rồi thử lại.');
+          if (++attempts >= 200) throw new Error('Chưa nhận được podcast sau 10 phút. Kiểm tra hệ thống rồi thử lại.');
+          podcastTimerRef.current = setTimeout(pollAudio, 3000);
+        } catch (error) {
+          if (!mountedRef.current) return;
+          setPodcastGenerating(false);
+          showToast(getErrorMessage(error), 8000);
+        }
+      };
+      podcastTimerRef.current = setTimeout(pollAudio, 1000);
+      return true;
+    } catch (e) {
+      console.error(e);
+      showToast('Không thể tạo podcast: ' + getErrorMessage(e));
+      setPodcastGenerating(false);
+      return false;
+    }
+  };
+
+  const handleCopyMessage = async (content, idx) => {
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMsgIdx(idx);
+      setTimeout(() => { if (mountedRef.current) setCopiedMsgIdx(null); }, 2000);
+    } catch { showToast('Không thể sao chép. Cho phép truy cập bộ nhớ tạm hoặc chọn văn bản để sao chép.'); }
+  };
+
+  const handleExportChat = () => {
+    if (!messages || messages.length === 0) {
+      showToast('Chưa có tin nhắn để xuất.');
+      return;
+    }
+    let md = `# Sổ tay: ${activeNotebook?.title || 'NotebookLM'}\n\n`;
+    md += `*Thời gian xuất: ${new Date().toLocaleString('vi-VN')}*\n`;
+    md += `*Mô hình: ${currentProvider?.toUpperCase()}: ${currentModel}*\n\n`;
+    md += `---\n\n`;
+
+    messages.forEach((msg) => {
+      const roleName = msg.role === 'user' ? '👤 **Người dùng:**' : '🤖 **Trợ lý AI:**';
+      md += `${roleName}\n\n${msg.content || ''}\n\n`;
+      if (msg.citations && msg.citations.length > 0) {
+        md += `> **Trích dẫn nguồn:**\n`;
+        msg.citations.forEach((c) => {
+          md += `> - [${c.marker}] ${c.filename}\n`;
+        });
+        md += `\n`;
+      }
+      md += `---\n\n`;
+    });
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeTitle = (activeNotebook?.title || 'cuoc_tro_chuyen').replace(/[\s/\\?%*:|"<>]/g, '_');
+    a.download = `${safeTitle}_chat_history.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // --- Feature #5: Message Delete & Clear ---
+  const handleDeleteMessage = async (msgId, index) => {
+    if (msgId) {
+      try {
+        await requestJson(`/api/notebooks/${activeNotebook.id}/messages/${msgId}`, { method: 'DELETE' });
+      } catch (e) {
+        console.error("Lỗi xóa tin nhắn:", e);
+        showToast('Không thể xóa tin nhắn: ' + getErrorMessage(e));
+        return;
+      }
+    }
+    setMessages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearAllMessages = async () => {
+    if (!window.confirm("Bạn có chắc chắn muốn xóa toàn bộ lịch sử trò chuyện của sổ tay này?")) return;
+    try {
+      await requestJson(`/api/notebooks/${activeNotebook.id}/messages`, { method: 'DELETE' });
+      setMessages([]);
+    } catch (e) {
+      console.error("Lỗi xóa toàn bộ hội thoại:", e);
+      showToast('Không thể xóa hội thoại: ' + getErrorMessage(e));
+    }
+  };
+
+  // --- Feature #10: Voice Input via Web Speech API ---
+  const handleVoiceToggle = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showToast('Trình duyệt chưa hỗ trợ nhận diện giọng nói. Dùng Chrome hoặc nhập câu hỏi trực tiếp.');
+      return;
+    }
+
+    if (isRecording) {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+          } catch { setIsRecording(false); }
+      }
+      setIsRecording(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'vi-VN';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+
+      // Lưu lại văn bản hiện có trước khi ghi âm để không bị ghi đè hoặc lặp
+      voiceBaseTextRef.current = input.trim();
+
+      recognition.onstart = () => setIsRecording(true);
+      recognition.onresult = (event) => {
+        let finalStr = '';
+        let interimStr = '';
+        for (let i = 0; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            finalStr += item[0]?.transcript || '';
+          } else {
+            interimStr += item[0]?.transcript || '';
+          }
+        }
+        const spoken = (finalStr + interimStr).trim();
+        if (spoken) {
+          const base = voiceBaseTextRef.current;
+          setInput(base ? `${base} ${spoken}` : spoken);
+        }
+      };
+      recognition.onerror = (e) => {
+        console.error("Lỗi nhận diện âm thanh:", e);
+        setIsRecording(false);
+      };
+      recognition.onend = () => setIsRecording(false);
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error(err);
+      setIsRecording(false);
+    }
+  };
+
+  // --- Feature #13: Click Citation to Highlight in Preview ---
+  const handleCitationClick = async (cit) => {
+    setLoadingPreview(true);
+    setHighlightSnippet(cit.snippet || null);
+    setPreviewDoc({ filename: cit.filename, loading: true });
+    try {
+      const res = await fetch(`/api/notebooks/${activeNotebook.id}/documents/preview?filename=${encodeURIComponent(cit.filename)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPreviewDoc(data);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  // --- Feature #8: Mindmap Handlers ---
+  const handleOpenMindmap = async () => {
+    if (!requireSources()) return;
+    setShowMindmapModal(true);
+    if (!mindmapData) {
+      setLoadingMindmap(true);
+      try {
+        const res = await fetch(`/api/notebooks/${activeNotebook.id}/mindmap`);
+        const data = await res.json();
+        if (data.mindmap) {
+          setMindmapData(data.mindmap);
+        } else {
+          await handleRegenerateMindmap();
         }
       } catch (e) {
         console.error(e);
+      } finally {
+        setLoadingMindmap(false);
       }
-    };
-    fetchData();
-  }, [id]);
-
-  useEffect(() => {
-    // Note: The logic inside fetchData was called in the previous mount effect.
-    // If you need specific re-fetching logic triggered by activeNotebook change,
-    // implement it here.
-  }, [activeNotebook]);
-
-  // Polling Study Guide if it is null AND there are documents
-  useEffect(() => {
-    let intervalId;
-    if (activeNotebook && !studyGuide && documents.length > 0) {
-      intervalId = setInterval(async () => {
-        try {
-          const guideRes = await fetch(`/api/notebooks/${activeNotebook.id}/study-guide`);
-          if (guideRes.ok) {
-            const guide = await guideRes.json();
-            if (guide) {
-              setStudyGuide(guide);
-              clearInterval(intervalId);
-            }
-          }
-        } catch (e) {
-          console.error("Lỗi khi poll Study Guide:", e);
-        }
-      }, 3000);
     }
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [activeNotebook, studyGuide, documents]);
+  };
 
-  const generatePodcast = async () => {
-    setPodcastGenerating(true);
+  const handleRegenerateMindmap = async (topic = "") => {
+    if (!requireSources() || loadingMindmap) return false;
+    setLoadingMindmap(true);
     try {
-      await fetch('/api/podcast/generate', {
+      const res = await fetch(`/api/notebooks/${activeNotebook.id}/mindmap/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notebook_id: activeNotebook?.id || 'default' })
+        body: JSON.stringify({ 
+          focus_topic: topic,
+          selected_documents: Array.from(selectedDocs)
+        })
       });
-      setTimeout(() => {
-        setAudioUrl(`/api/podcast/audio/${activeNotebook?.id || 'default'}?t=${Date.now()}`);
-        setPodcastGenerating(false);
-      }, 2000);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Lỗi máy chủ (${res.status})`);
+      }
+      const data = await res.json();
+      if (data.mindmap) {
+        setMindmapData(data.mindmap);
+      }
+      return true;
     } catch (e) {
-      console.error(e);
-      setPodcastGenerating(false);
+      showToast('Không thể tạo sơ đồ tư duy: ' + getErrorMessage(e));
+      return false;
+    } finally {
+      setLoadingMindmap(false);
+    }
+  };
+
+  // --- Feature #15: Timeline & Outline Handlers ---
+  const handleOpenTimeline = async () => {
+    if (!requireSources()) return;
+    setShowTimelineModal(true);
+    if (!timelineData) {
+      setLoadingTimeline(true);
+      try {
+        const res = await fetch(`/api/notebooks/${activeNotebook.id}/timeline-outline`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.timeline_outline) {
+            setTimelineData(data.timeline_outline);
+          } else {
+            await handleRegenerateTimeline();
+          }
+        } else {
+          await handleRegenerateTimeline();
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoadingTimeline(false);
+      }
+    }
+  };
+
+  const handleRegenerateTimeline = async (topic = "") => {
+    if (!requireSources() || loadingTimeline) return false;
+    setLoadingTimeline(true);
+    try {
+      const res = await fetch(`/api/notebooks/${activeNotebook.id}/timeline-outline/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          focus_topic: topic,
+          selected_documents: Array.from(selectedDocs)
+        })
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Lỗi máy chủ (${res.status})`);
+      }
+      const data = await res.json();
+      if (data.timeline_outline) {
+        setTimelineData(data.timeline_outline);
+      }
+      return true;
+    } catch (e) {
+      showToast('Không thể tạo dòng thời gian và dàn ý: ' + getErrorMessage(e));
+      return false;
+    } finally {
+      setLoadingTimeline(false);
+    }
+  };
+
+  // --- Feature #9: Document Comparison Handler ---
+  const handleCompareDocs = async (selectedDocList, topic = "") => {
+    if (comparingDocs || selectedDocList.length < 2) return false;
+    setComparingDocs(true);
+    try {
+      const res = await fetch(`/api/notebooks/${activeNotebook.id}/documents/compare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filenames: selectedDocList, focus_topic: topic })
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Lỗi máy chủ (${res.status})`);
+      }
+      const data = await res.json();
+      if (data.comparison) {
+        setComparisonResult(data.comparison);
+        return true;
+      } else {
+        throw new Error('Chưa nhận được nội dung so sánh. Hãy thử lại.');
+      }
+    } catch (e) {
+      showToast('Không thể so sánh tài liệu: ' + getErrorMessage(e));
+      return false;
+    } finally {
+      setComparingDocs(false);
+    }
+  };
+
+
+  // --- Feature #12: Export Notebook JSON ---
+  const handleExportNotebookJson = async () => {
+    try {
+      const data = await requestJson(`/api/notebooks/${activeNotebook.id}/export`);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `notebook-${(activeNotebook.title || 'backup').replace(/[\s/\\?%*:|"<>]/g, '_')}-${activeNotebook.id}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast('Không thể xuất dữ liệu: ' + getErrorMessage(e));
+    }
+  };
+
+  const handlePreviewDocument = async (filename) => {
+    setHighlightSnippet(null);
+    setLoadingPreview(true);
+    setPreviewDoc({ filename, loading: true });
+    try {
+      const data = await requestJson(`/api/notebooks/${activeNotebook.id}/documents/preview?filename=${encodeURIComponent(filename)}`);
+      setPreviewDoc(data);
+    } catch (e) {
+      setPreviewDoc({ filename, preview_text: "Lỗi kết nối khi xem trước tài liệu: " + e.message });
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handleInspectChunks = async (sourceName, e) => {
+    if (e) e.stopPropagation();
+    setInspectDoc(sourceName);
+    setLoadingChunks(true);
+    setChunkSearch('');
+    try {
+      const res = await fetch(`/api/documents/chunks?source=${encodeURIComponent(sourceName)}&notebook_id=${activeNotebook?.id || ''}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDocChunks(data.chunks || []);
+      } else {
+        setDocChunks([]);
+      }
+    } catch (err) {
+      console.error("Lỗi tải chunks:", err);
+      setDocChunks([]);
+    } finally {
+      setLoadingChunks(false);
+    }
+  };
+
+  const handleRunStudioTool = async (toolId) => {
+    if (!requireSources() || critiqueModal.loading) return false;
+    const isCritique = toolId === 'critique';
+    const nbId = activeNotebook?.id || id || '';
+    const endpoint = isCritique 
+      ? `/api/studio/critique?notebook_id=${encodeURIComponent(nbId)}` 
+      : `/api/studio/action-plan?notebook_id=${encodeURIComponent(nbId)}`;
+    const title = isCritique ? 'Báo Cáo Phản Biện & Tìm Lỗ Hổng (Peer Review)' : 'Kế Hoạch Hành Động Thực Tiễn (Action Plan)';
+    
+    setCritiqueModal({ isOpen: true, type: toolId, title, content: '', loading: true });
+    
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-notebook-id': nbId
+        },
+        body: JSON.stringify({
+          notebook_id: nbId,
+          source_filter: selectedDocs.size === 1 ? Array.from(selectedDocs)[0] : null,
+          selected_documents: Array.from(selectedDocs)
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCritiqueModal({ isOpen: true, type: toolId, title, content: data.content || data.error || 'Không có kết quả phân tích.', loading: false });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setCritiqueModal({ isOpen: true, type: toolId, title, content: err.detail || 'Lỗi khi gọi API phân tích.', loading: false });
+      }
+    } catch (e) {
+      setCritiqueModal({ isOpen: true, type: toolId, title, content: 'Lỗi kết nối máy chủ: ' + e.message, loading: false });
     }
   };
 
@@ -131,26 +1274,28 @@ function Studio() {
     if (!activeNotebook) return;
     if (!window.confirm("Bạn có chắc chắn muốn xóa sổ tay này và toàn bộ dữ liệu bên trong không?")) return;
     try {
-      const res = await fetch(`/api/notebooks/${activeNotebook.id}`, { method: 'DELETE' });
-      if (res.ok) {
-        navigate(-1);
-      }
+      await requestJson(`/api/notebooks/${activeNotebook.id}`, { method: 'DELETE' });
+      navigate('/dashboard');
     } catch (e) {
       console.error(e);
+      showToast('Không thể xóa sổ tay: ' + getErrorMessage(e));
     }
   };
 
   const handleUrlSubmit = async () => {
-    if (!urlInputValue.trim() || !activeNotebook) return;
+    if (!urlInputValue.trim() || !activeNotebook || uploading) return false;
+    setUrlError('');
     
-    // Basic URL validation
     let urlToSubmit = urlInputValue.trim();
     if (!urlToSubmit.startsWith('http://') && !urlToSubmit.startsWith('https://')) {
       urlToSubmit = 'https://' + urlToSubmit;
     }
 
-    setLoading(true);
-    setShowUrlInput(false);
+    try {
+      const parsed = new URL(urlToSubmit);
+      if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname.includes('.')) throw new Error();
+    } catch { setUrlError('Nhập đường dẫn website hoặc YouTube hợp lệ.'); return false; }
+    setUploading(true);
     setUploadingDocs(prev => [...prev, { filename: urlToSubmit }]);
     
     try {
@@ -158,168 +1303,205 @@ function Studio() {
       formData.append('url', urlToSubmit);
       formData.append('notebook_id', activeNotebook.id);
 
-      const res = await fetch('/api/ingest/url', {
+      await requestJson('/api/ingest/url', {
         method: 'POST',
         body: formData
       });
       
-      if (!res.ok) {
-        throw new Error(`Mã lỗi từ máy chủ: ${res.status}`);
-      }
-
-      await res.json();
       setUrlInputValue('');
-      
-      // Cập nhật lại danh sách documents
-      const docRes = await fetch(`/api/notebooks/${activeNotebook.id}/documents`);
-      if (docRes.ok) {
-        setDocuments(await docRes.json());
-      }
+      setShowUrlInput(false);
+      await refreshSources();
+      showToast('Đã thêm nguồn từ đường dẫn.');
+      setMobileActiveTab('chat');
+      return true;
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `Lỗi khi nạp link: ${e.message}`, citations: [] }]);
+      setUrlError(getErrorMessage(e));
+      showToast('Không thể thêm đường dẫn: ' + getErrorMessage(e), 8000);
+      return false;
     } finally {
-      setLoading(false);
+      setUploading(false);
       setUploadingDocs(prev => prev.filter(d => d.filename !== urlToSubmit));
     }
   };
 
+  // Hỗ trợ tải lên NHIỀU FILE cùng lúc (Multi-file Upload)
   const handleFileUpload = async (e) => {
-    if (!activeNotebook) return;
-    const file = e.target.files[0];
-    if (!file) return;
+    if (!activeNotebook || uploading) return;
+    const files = Array.from(e.target.files || []);
+    const inputElement = e.target;
+    if (files.length === 0) return;
 
     setUploading(true);
-    setUploadingDocs(prev => [...prev, { filename: file.name }]);
+    setUploadingDocs(prev => [...prev, ...files.map(f => ({ filename: f.name }))]);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('notebook_id', activeNotebook.id);
+    let completed = 0;
+    const failures = [];
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('notebook_id', activeNotebook.id);
+
+      try {
+        await requestJson('/api/ingest/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        completed += 1;
+      } catch (err) {
+        console.error(err);
+        failures.push(`${file.name}: ${getErrorMessage(err)}`);
+      } finally {
+        setUploadingDocs(prev => prev.filter(d => d.filename !== file.name));
+      }
+    }
 
     try {
-      const response = await fetch('/api/ingest/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error('Upload failed');
-      const data = await response.json();
-      
-      // Cập nhật lại danh sách documents
-      const docRes = await fetch(`/api/notebooks/${activeNotebook.id}/documents`);
-      if (docRes.ok) {
-        setDocuments(await docRes.json());
-      }
+      if (completed) { await refreshSources(); setMobileActiveTab('chat'); }
+      if (failures.length) showToast(`Đã thêm ${completed}/${files.length} tệp. ${failures.join('; ')}`, 12000);
+      else showToast(`Đã thêm ${completed} tài liệu. Bạn có thể bắt đầu đặt câu hỏi.`);
     } catch (err) {
       console.error(err);
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ Lỗi khi tải tệp: ${err.message}`, citations: [] }]);
+      showToast('Đã tải tệp nhưng chưa cập nhật được danh sách. Hãy tải lại trang.');
     } finally {
       setUploading(false);
-      setUploadingDocs(prev => prev.filter(d => d.filename !== file.name));
-      e.target.value = null;
+      inputElement.value = '';
+    }
+  };
+
+  // Nạp văn bản dán trực tiếp (Paste Text)
+  const handlePasteTextSubmit = async () => {
+    if (!pasteContent.trim() || !activeNotebook || uploading) return false;
+    const tempTitle = pasteTitle.trim() || `Ghi chú (${new Date().toLocaleTimeString('vi-VN')}).txt`;
+    setUploading(true);
+    setUploadingDocs(prev => [...prev, { filename: tempTitle }]);
+
+    try {
+      await requestJson('/api/ingest/text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notebook_id: activeNotebook.id,
+          title: tempTitle,
+          text: pasteContent
+        })
+      });
+      await refreshSources();
+      setPasteTitle('');
+      setPasteContent('');
+      setShowPasteTextModal(false);
+      setMobileActiveTab('chat');
+      showToast('Đã thêm văn bản vào nguồn tài liệu.');
+      return true;
+    } catch (e) {
+      showToast('Không thể thêm văn bản: ' + getErrorMessage(e));
+      return false;
+    } finally {
+      setUploading(false);
+      setUploadingDocs(prev => prev.filter(d => d.filename !== tempTitle));
     }
   };
 
   const deleteDocument = async (filename) => {
-    if (!activeNotebook) return;
-    if (!window.confirm(`Bạn có chắc muốn xóa tài liệu "${filename}"?`)) return;
+    if (!activeNotebook || uploading) return false;
+    if (!window.confirm(`Xóa tài liệu "${filename}"? Học liệu liên quan sẽ cần tạo lại.`)) return false;
     
     try {
-      const res = await fetch(`/api/notebooks/${activeNotebook.id}/documents?filename=${encodeURIComponent(filename)}`, { method: 'DELETE' });
-      if (res.ok) {
-        setDocuments(prev => prev.filter(d => d.filename !== filename));
-      }
+      await requestJson(`/api/notebooks/${activeNotebook.id}/documents?filename=${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      await refreshSources();
+      setGuideStatus('not_found');
+      setRegeneratingGuide(false);
+      showToast('Đã xóa tài liệu. Tạo lại học liệu để sử dụng các nguồn còn lại.');
+      return true;
     } catch (err) {
       console.error('Error deleting document:', err);
+      showToast('Không thể xóa tài liệu: ' + getErrorMessage(err));
+      return false;
     }
   };
 
   const handleSend = async () => {
-    if (!input.trim() || !activeNotebook) return;
-    
+    if (!input.trim() || !activeNotebook || loading || uploading || !requireSources()) return;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const clientId = crypto.randomUUID();
+    activeChatRef.current = { controller, clientId };
     const userMsg = input.trim();
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    stickToBottomRef.current = true;
+    setMobileActiveTab('chat');
+    setMessages(prev => [...prev,
+      { role: 'user', content: userMsg, clientId: `${clientId}-user` },
+      { role: 'assistant', content: '', citations: [], clientId },
+    ]);
     setLoading(true);
-
+    const updateAssistant = update => setMessages(prev => prev.map(message => message.clientId === clientId ? { ...message, ...update(message) } : message));
     try {
-      setMessages(prev => [...prev, { role: 'assistant', content: '', citations: [] }]);
-      
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: userMsg, notebook_id: activeNotebook.id })
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-notebook-id': activeNotebook.id
+        },
+        signal: controller.signal,
+        body: JSON.stringify({ 
+          query: userMsg, 
+          persona: chatPersona,
+          notebook_id: activeNotebook.id,
+          provider: activeNotebook.provider,
+          model_name: activeNotebook.model_name,
+          selected_documents: Array.from(selectedDocs)
+        })
       });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      
-      let buffer = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || "";
-        
-        for (const event of events) {
-          if (event.startsWith("data: ")) {
-            const dataStr = event.substring(6);
-            try {
-              const data = JSON.parse(dataStr);
-              
-              setMessages(prev => {
-                const newMessages = [...prev];
-                const lastIndex = newMessages.length - 1;
-                
-                if (data.type === 'citations') {
-                  newMessages[lastIndex] = {
-                    ...newMessages[lastIndex],
-                    citations: data.citations
-                  };
-                } else if (data.type === 'chunk') {
-                  newMessages[lastIndex] = {
-                    ...newMessages[lastIndex],
-                    content: newMessages[lastIndex].content + data.text,
-                    status: null
-                  };
-                } else if (data.type === 'status') {
-                  newMessages[lastIndex] = {
-                    ...newMessages[lastIndex],
-                    status: data.message
-                  };
-                }
-                
-                return newMessages;
-              });
-            } catch (e) {
-              console.error("Lỗi parse JSON SSE", e);
-            }
-          }
+      let receivedContent = false;
+      for await (const data of readSSE(response)) {
+        if (controller.signal.aborted || !mountedRef.current) break;
+        if (data.type === 'error') throw new Error(data.message || data.error || 'Mô hình không thể trả lời.');
+        if (data.type === 'citations') updateAssistant(() => ({ citations: data.citations || [] }));
+        if (data.type === 'status') updateAssistant(() => ({ status: data.message }));
+        if (data.type === 'chunk') {
+          receivedContent ||= Boolean(data.text);
+          updateAssistant(message => ({ content: message.content + (data.text || ''), status: null }));
+        }
+        if (data.type === 'saved') {
+          setMessages(prev => prev.map(message => {
+            if (message.clientId === `${clientId}-user`) return { ...message, id: data.user_msg_id };
+            if (message.clientId === clientId) return { ...message, id: data.assistant_msg_id, status: null };
+            return message;
+          }));
         }
       }
+      if (!controller.signal.aborted && !receivedContent) throw new Error('Chưa nhận được câu trả lời. Kiểm tra mô hình AI rồi gửi lại câu hỏi.');
     } catch (err) {
-      console.error(err);
-      setMessages(prev => {
-        const newMessages = [...prev];
-        const lastIndex = newMessages.length - 1;
-        newMessages[lastIndex] = {
-          ...newMessages[lastIndex],
-          content: 'Xin lỗi, có lỗi xảy ra khi kết nối tới LLM Engine.'
-        };
-        return newMessages;
-      });
+      if (controller.signal.aborted || !mountedRef.current) return;
+      const message = getErrorMessage(err, 'Không thể kết nối. Kiểm tra hệ thống rồi thử lại.');
+      updateAssistant(previous => ({ content: previous.content ? `${previous.content}\n\n${message}` : message, status: null, error: true }));
+      setInput(previous => previous || userMsg);
+      showToast(message, 8000);
     } finally {
-      setLoading(false);
+      if (mountedRef.current && activeChatRef.current?.controller === controller) {
+        setLoading(false);
+        abortControllerRef.current = null;
+        activeChatRef.current = null;
+      }
     }
+  };
+
+  // Tính năng: Dừng câu trả lời ngay lập tức
+  const handleStopGenerating = () => {
+    if (!abortControllerRef.current) return;
+    const clientId = activeChatRef.current?.clientId;
+    abortControllerRef.current.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    setMessages(prev => prev.map(message => message.clientId === clientId
+      ? { ...message, content: `${message.content || ''}\n\n_Đã dừng câu trả lời._`, status: null }
+      : message));
   };
 
   const handleEvaluate = async () => {
     if (!activeNotebook) return;
     setEvaluating(true);
-    setEvalResult(null);
     try {
       const formData = new FormData();
       formData.append('notebook_id', activeNotebook.id);
@@ -328,20 +1510,25 @@ function Studio() {
         body: formData
       });
       const data = await res.json();
-      if (data.status === 'success') {
+      if (!res.ok) {
+        throw new Error(data.detail || `Backend trả về HTTP ${res.status}`);
+      }
+      if (data.status === 'success' && data.metrics) {
         setEvalResult(data.metrics);
+        setShowEvalModal(true);
       } else {
-        alert("Lỗi đánh giá: " + data.message);
+        throw new Error(data.message || 'Chưa có kết quả đánh giá.');
       }
     } catch (e) {
       console.error(e);
+      showToast('Không thể đánh giá: ' + getErrorMessage(e));
     } finally {
       setEvaluating(false);
     }
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       if (!loading && input.trim()) {
         handleSend();
@@ -349,443 +1536,1856 @@ function Studio() {
     }
   };
 
-  if (!activeNotebook) return <div className="h-screen w-full flex items-center justify-center bg-[#131314] text-white"><Loader className="animate-spin" size={32} /></div>;
+  if (notebookError) {
+    return (
+      <main className={`min-h-dvh flex items-center justify-center p-6 ${isDark ? 'bg-[#101216] text-white' : 'bg-slate-50 text-slate-900'}`}>
+        <div role="alert" className="max-w-md text-center space-y-5">
+          <AlertCircle size={40} className="mx-auto text-amber-500" />
+          <h1 className="text-xl font-bold">Không thể mở sổ tay</h1>
+          <p className="text-sm leading-relaxed opacity-75">{notebookError}</p>
+          <div className="flex gap-3 justify-center">
+            <button onClick={() => navigate('/dashboard')} className="px-4 py-2.5 border rounded-xl">Về danh sách</button>
+            <button onClick={fetchNotebookDetails} className="px-4 py-2.5 bg-blue-600 text-white rounded-xl">Thử lại</button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+  if (!activeNotebook) {
+    return (
+      <div role="status" aria-label="Đang mở sổ tay" className="h-dvh w-full flex items-center justify-center bg-[#131314] text-white">
+        <Loader className="animate-spin text-blue-500" size={32} />
+      </div>
+    );
+  }
+
+  const currentProvider = activeNotebook.provider || (activeNotebook.is_private ? 'ollama' : 'gemini');
+  const currentModel = activeNotebook.model_name || (currentProvider === 'ollama' ? 'qwen2.5:3b' : 'gemini-2.5-flash');
 
   return (
-    <div className="h-screen w-full flex bg-[#131314] text-white overflow-hidden font-sans selection:bg-blue-500/30">
+    <div data-theme={theme} className={`studio-shell h-dvh w-full flex overflow-hidden font-sans transition-colors pb-16 lg:pb-0 ${
+      isDark ? 'bg-[#101216] text-white selection:bg-blue-500/30' : 'bg-[#f8fafc] text-slate-900 selection:bg-blue-200'
+    }`}>
       
       {/* Cột 1: Left Sidebar (Sources) */}
-      <div className="w-72 flex-shrink-0 h-full border-r border-white/5 bg-[#131314] flex flex-col p-4 z-10 relative">
-        <button onClick={() => navigate('/dashboard')} className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 w-fit transition-colors">
-          <ArrowLeft size={18} /> Quay lại
-        </button>
-        <h2 className="font-semibold text-lg mb-4 flex items-center gap-2 text-gray-200">
-          <Layers size={18} className="text-blue-400" /> Nguồn dữ liệu
-        </h2>
+      <div className={`${
+        showLeftSidebar ? 'lg:flex lg:w-64 xl:lg:w-72' : 'lg:hidden'
+      } studio-panel flex-shrink-0 h-full border-r flex-col p-4 z-20 transition-all duration-200 ${
+        isDark ? 'bg-[#14161a] border-white/5' : 'bg-white border-slate-200'
+      } ${mobileActiveTab === 'docs' ? 'flex w-full fixed inset-x-0 top-0 bottom-16 lg:static' : 'hidden'}`}>
         
-        <div className="flex-1 overflow-y-auto scrollbar-hide space-y-3">
+        <div className="flex items-center justify-between pb-3.5 border-b border-white/10 mb-4 min-h-[44px]">
+          <button onClick={() => navigate('/dashboard')} className={`flex items-center gap-2 transition-colors text-sm font-medium ${isDark ? 'text-gray-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}>
+            <ArrowLeft size={16} /> Quay lại
+          </button>
+          <div className="flex items-center gap-1">
+            {mobileActiveTab === 'docs' ? (
+              <button 
+                onClick={() => setMobileActiveTab('chat')}
+                className="lg:hidden text-xs px-2.5 py-1 rounded-lg bg-white/10 text-white"
+              >
+                Đóng
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowLeftSidebar(false)}
+                className={`hidden lg:flex items-center justify-center p-1.5 rounded-lg border transition cursor-pointer ${
+                  isDark ? 'text-gray-400 hover:text-white bg-white/5 border-white/10 hover:bg-white/10' : 'text-slate-500 hover:text-slate-900 bg-slate-100 border-slate-200 hover:bg-slate-200'
+                }`}
+                title="Thu gọn thanh Nguồn (Ctrl+B)"
+              >
+                <PanelLeftClose size={15} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-semibold text-sm flex items-center gap-2">
+            <Layers size={17} className="text-blue-400" /> Nguồn ({documents.length})
+          </h2>
+          {documents.length >= 2 && (
+            <button
+              onClick={() => setShowDocCompareModal(true)}
+              className="text-[11px] px-2 py-0.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1 font-semibold transition"
+              title="So sánh & đối chiếu các tài liệu đã tải lên"
+            >
+              <Scale size={11} /> So sánh
+            </button>
+          )}
+        </div>
+
+        {/* Thanh công cụ chọn tài liệu làm ngữ cảnh */}
+        {documents.length > 0 && (
+          <div className="flex items-center justify-between pb-2 mb-2 border-b border-white/10 text-[11px]">
+            <span className="text-gray-400">
+              Đang chọn: <strong className={selectedDocs.size > 0 ? "text-green-400" : "text-amber-400"}>{selectedDocs.size}/{documents.length}</strong>
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSelectAllDocs}
+                className="text-blue-400 hover:text-blue-300 font-medium hover:underline"
+              >
+                Tất cả
+              </button>
+              <span className="text-gray-600">•</span>
+              <button
+                type="button"
+                onClick={handleDeselectAllDocs}
+                className="text-gray-400 hover:text-gray-200 font-medium hover:underline"
+              >
+                Bỏ chọn
+              </button>
+            </div>
+          </div>
+        )}
+        
+        {documents.length > 0 && <label className="relative mb-3 block">
+          <span className="sr-only">Tìm nguồn tài liệu</span>
+          <Search size={14} className="absolute left-3 top-3 text-slate-400" />
+          <input value={sourceSearch} onChange={event => setSourceSearch(event.target.value)} placeholder="Tìm tài liệu..." className={`w-full rounded-xl border py-2.5 pl-9 pr-3 text-xs ${isDark ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-200'}`} />
+        </label>}
+        <div className="flex-1 min-h-0 overflow-y-auto space-y-2">
           {documents.length === 0 && uploadingDocs.length === 0 ? (
-            <div className="text-center text-gray-500 text-sm mt-10">Chưa có dữ liệu nào</div>
+            <div className="text-center text-gray-500 text-xs mt-12 px-4 leading-relaxed">
+              Chưa có tài liệu nào.<br />Hãy tải tệp PDF, Word, Ảnh hoặc dán Link bài viết vào đây.
+            </div>
           ) : (
             <>
               {uploadingDocs.map((doc, index) => (
-                <div key={`up-${index}`} className="p-3 bg-white/5 rounded-xl border border-white/10 flex items-center gap-3 opacity-70">
-                  <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
-                    <Loader size={20} className="animate-spin" />
+                <div key={`up-${index}`} className="p-2.5 bg-white/5 rounded-xl border border-white/10 flex items-center gap-2.5 opacity-70">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+                    <Loader size={16} className="animate-spin" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate text-gray-200" title={doc.filename}>{doc.filename}</p>
-                    <p className="text-xs text-blue-400 truncate mt-1">Đang nạp...</p>
+                    <p className="text-xs font-medium truncate text-gray-200" title={doc.filename}>{doc.filename}</p>
+                    <p role="status" className="text-[10px] text-blue-400 truncate mt-0.5">Đang đọc tài liệu...</p>
                   </div>
                 </div>
               ))}
-              {documents.map((doc, index) => (
-                <div key={`doc-${index}`} className="p-3 bg-white/5 rounded-xl border border-white/10 flex items-center justify-between gap-3 group">
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center text-blue-400 shrink-0 relative">
-                      {doc.filename.includes('http') || doc.filename.includes('YouTube') ? <LinkIcon size={20} /> : <FileText size={20} />}
-                      <div className="absolute -bottom-1 -right-1 bg-green-500 rounded-full text-[#131314] p-0.5">
-                        <Check size={10} strokeWidth={4} />
+              {documents.filter(doc => doc.filename.toLowerCase().includes(sourceSearch.toLowerCase())).map((doc, index) => {
+                const isSelected = selectedDocs.has(doc.filename);
+                return (
+                  <div 
+                    key={`doc-${index}`} 
+                    className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 group transition cursor-pointer ${
+                      isSelected 
+                        ? 'bg-white/[0.04] border-white/15 hover:bg-white/[0.08]' 
+                        : 'bg-black/20 border-white/5 opacity-50 hover:opacity-75'
+                    }`}
+                    onClick={() => toggleSelectDoc(doc.filename)}
+                    title={isSelected ? "Đang chọn làm ngữ cảnh (Bấm để bỏ chọn)" : "Chưa chọn (Bấm để chọn làm ngữ cảnh)"}
+                  >
+                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectDoc(doc.filename);
+                        }}
+                        className={`w-4 h-4 rounded border flex items-center justify-center transition shrink-0 ${
+                          isSelected 
+                            ? 'bg-blue-600 border-blue-500 text-white' 
+                            : 'border-white/30 bg-white/5 hover:border-white/50 text-transparent'
+                        }`}
+                        title={isSelected ? "Bỏ chọn" : "Chọn làm ngữ cảnh"}
+                        role="checkbox"
+                        aria-checked={isSelected}
+                        aria-label={`Dùng ${doc.filename} làm nguồn`}
+                      >
+                        <Check size={11} strokeWidth={3} />
+                      </button>
+
+                      <div className="w-7 h-7 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 shrink-0">
+                        {doc.filename.includes('http') || doc.filename.includes('YouTube') ? <LinkIcon size={14} /> : <FileText size={14} />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-xs font-medium truncate ${isSelected ? 'text-gray-200' : 'text-gray-400'}`} title={doc.filename}>
+                          {doc.filename}
+                        </p>
+                        <p className="text-[10px] text-gray-500 truncate">{new Date(doc.created_at).toLocaleDateString('vi-VN')}</p>
                       </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate text-gray-200" title={doc.filename}>{doc.filename}</p>
-                      <p className="text-xs text-gray-500 truncate">{new Date(doc.created_at).toLocaleString('vi-VN')}</p>
+                    <div className="flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-within:opacity-100 transition shrink-0" onClick={e => e.stopPropagation()}>
+                      <button 
+                        onClick={(e) => handleInspectChunks(doc.filename, e)}
+                        className="p-1.5 rounded text-gray-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition"
+                        title="Xem các đoạn (Chunks) đã bóc tách"
+                      >
+                        <Eye size={13} />
+                      </button>
+                      <button 
+                        onClick={() => handlePreviewDocument(doc.filename)}
+                        className="p-1.5 rounded text-gray-400 hover:text-blue-400 hover:bg-white/10 transition"
+                        title="Xem toàn văn trích xuất"
+                      >
+                        <FileText size={13} />
+                      </button>
+                      <button 
+                        onClick={() => deleteDocument(doc.filename)}
+                        className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-white/10 transition"
+                        title="Xóa tài liệu"
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => deleteDocument(doc.filename)}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-white/10 transition-all shrink-0"
-                    title="Xóa tài liệu"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </>
           )}
         </div>
 
-        <div className="pt-4 mt-auto border-t border-white/5">
-          <button 
-            onClick={() => setShowUrlInput(!showUrlInput)}
-            className="w-full bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl flex justify-center items-center gap-2 font-medium transition-colors mb-2 border border-white/10"
-          >
-            <LinkIcon size={18} /> Thêm Link
-          </button>
+        <div className="pt-3 mt-auto border-t border-white/10 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button 
+              onClick={() => setShowUrlInput(!showUrlInput)}
+              className="bg-white/5 hover:bg-white/10 text-gray-200 py-2 rounded-xl flex justify-center items-center gap-1.5 font-medium text-xs transition border border-white/10"
+            >
+              <LinkIcon size={14} /> Website / YouTube
+            </button>
+            <button 
+              onClick={() => setShowPasteTextModal(true)}
+              className="bg-white/5 hover:bg-white/10 text-gray-200 py-2 rounded-xl flex justify-center items-center gap-1.5 font-medium text-xs transition border border-white/10"
+            >
+              <FileText size={14} /> Dán văn bản
+            </button>
+          </div>
           <button 
             onClick={() => document.getElementById('file-upload').click()}
-            className="w-full bg-white text-black hover:bg-gray-200 py-3 rounded-xl flex justify-center items-center gap-2 font-medium transition-colors shadow-lg"
+            className="w-full bg-white text-black hover:bg-gray-200 py-2.5 rounded-xl flex justify-center items-center gap-2 font-semibold text-xs transition shadow-lg"
           >
-            <Plus size={18} /> Tải tệp lên
+            {uploading ? <Loader size={15} className="animate-spin" /> : <Plus size={15} />} {uploading ? 'Đang thêm tài liệu...' : 'Thêm tài liệu'}
           </button>
         </div>
       </div>
 
       {/* Cột 2: Center (Chat) */}
-      <div className="flex-1 flex flex-col h-full border-r border-white/5 p-4 max-w-4xl mx-auto relative z-10">
-      <div className="flex items-center justify-between pb-4 border-b border-white/10 mb-4">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <FileText className="text-electric-blue" size={24}/>
-            Phòng Chat
-          </h2>
-          <span className="bg-white/10 text-xs px-2 py-1 rounded-full text-gray-300">
-            {activeNotebook?.title || "Chưa chọn Sổ tay"}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {evalResult && (
-            <div className="flex gap-2 text-xs mr-2">
-              <span className="bg-green-500/20 text-green-400 px-2 py-1 rounded border border-green-500/30">
-                Chính xác: {evalResult.faithfulness.toFixed(2)}
-              </span>
-              <span className="bg-blue-500/20 text-blue-400 px-2 py-1 rounded border border-blue-500/30">
-                Ngữ cảnh: {evalResult.context_precision.toFixed(2)}
-              </span>
-            </div>
-          )}
-          <button 
-            onClick={handleEvaluate}
-            disabled={evaluating}
-            className="text-sm px-3 py-1.5 rounded-lg border border-yellow-500/50 bg-yellow-500/20 text-yellow-500 hover:bg-yellow-500/30 transition-colors disabled:opacity-50 flex items-center gap-1"
-            title="Đánh giá chất lượng RAG bằng Ragas"
-          >
-            {evaluating ? <Loader size={14} className="animate-spin" /> : <Brain size={14} />}
-            Đánh giá AI
-          </button>
-          <button 
-            onClick={deleteNotebook}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-white/5 transition-colors"
-            title="Xóa sổ tay"
-          >
-            <Trash2 size={18} />
-          </button>
-        </div>
-      </div>
+      <main id="main-content" className={`flex-1 min-w-0 flex flex-col h-full border-r border-white/5 p-3 sm:p-4 mx-auto relative z-10 transition-all duration-200 ${
+        (!showLeftSidebar && !showRightSidebar) ? 'max-w-5xl' : 'max-w-4xl'
+      }`}>
+        
+        {/* Chat Header */}
+        <div className="studio-header flex items-center justify-between pb-3.5 border-b border-white/10 mb-4 gap-3 flex-wrap min-h-[44px]">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <button onClick={() => navigate('/dashboard')} className="lg:hidden p-2 rounded-lg border border-current/10" aria-label="Về danh sách sổ tay"><ArrowLeft size={16} /></button>
+            {/* Toggle Left Sidebar Button */}
+            <button
+              onClick={() => setShowLeftSidebar(prev => !prev)}
+              className={`h-8 w-8 rounded-xl border transition hidden lg:flex items-center justify-center font-medium shrink-0 cursor-pointer ${
+                !showLeftSidebar
+                  ? 'border-blue-500/50 bg-blue-500/20 text-blue-400 shadow-sm'
+                  : (isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200')
+              }`}
+              title={showLeftSidebar ? "Thu gọn thanh Nguồn (Ctrl+B)" : "Mở thanh Nguồn (Ctrl+B)"}
+            >
+              {showLeftSidebar ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
+            </button>
 
-      <div className="flex-1 overflow-y-auto scrollbar-hide flex flex-col gap-6 pb-4">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'user' ? 'bg-gradient-to-br from-neon-purple to-pink-500' : 'bg-gradient-to-br from-electric-blue to-cyan-400'}`}>
-              {msg.role === 'assistant' ? <Bot size={20} className="text-white" /> : <User size={20} className="text-white" />}
-            </div>
-            <div className={`flex flex-col gap-2 max-w-[80%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <div className={`px-5 py-3.5 rounded-2xl text-[15px] leading-relaxed shadow-lg ${
-                msg.role === 'user' 
-                  ? 'bg-surface border border-white/10 text-white rounded-tr-sm' 
-                  : 'glass-panel text-gray-100 rounded-tl-sm'
-              }`}>
-                {msg.content ? (
-                  <div className="relative">
-                    {msg.content.split('\n').map((line, i, arr) => (
-                      <span key={i}>
-                        {line}
-                        {msg.role === 'assistant' && loading && idx === messages.length - 1 && i === arr.length - 1 && (
-                          <span className="inline-block w-2 h-4 bg-electric-blue animate-pulse ml-1 align-middle rounded-sm shadow-[0_0_8px_rgba(37,99,235,0.8)]"></span>
-                        )}
-                        <br />
-                      </span>
-                    ))}
+            <h1 className="text-sm sm:text-base font-bold flex items-center gap-2 truncate max-w-[150px] sm:max-w-[200px]" title={activeNotebook.title}>
+              <FileText className="text-blue-500 shrink-0" size={17}/>
+              <span className="truncate">{activeNotebook.title}</span>
+            </h1>
+
+            {/* Quick Model Selector Chip */}
+            <div className="relative min-w-0">
+              <button 
+                onClick={() => setShowModelPicker(!showModelPicker)}
+                disabled={loading}
+                aria-expanded={showModelPicker}
+                aria-label={`Đổi mô hình, hiện tại ${currentModel}`}
+                className={`h-8 flex items-center gap-1.5 text-xs font-semibold px-2.5 rounded-xl border transition cursor-pointer shadow-sm hover:brightness-110 ${
+                  currentProvider === 'ollama' 
+                    ? 'bg-green-500/10 text-green-400 border-green-500/30 hover:bg-green-500/20' 
+                    : 'bg-blue-500/10 text-blue-400 border-blue-500/30 hover:bg-blue-500/20'
+                }`}
+                title="Bấm để đổi mô hình AI"
+              >
+                {currentProvider === 'ollama' ? <Cpu size={13} className="shrink-0 text-green-400" /> : <Cloud size={13} className="shrink-0 text-blue-400" />}
+                <span className="font-mono text-[10px] sm:text-xs max-w-[90px] sm:max-w-[160px] truncate">{currentModel}</span>
+                <span className="text-[10px] opacity-60">▾</span>
+              </button>
+
+              {/* Model Picker Dropdown */}
+              {showModelPicker && (
+                <div className="absolute left-0 mt-2 w-72 bg-[#1c1e24] border border-white/15 rounded-xl shadow-2xl p-2 z-30 space-y-1 animate-fade-in max-h-96 overflow-y-auto">
+                  <div className="flex items-center justify-between px-2 py-1">
+                    <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                      Đổi Mô hình AI
+                    </div>
+                    <button
+                      onClick={() => {
+                        setShowModelPicker(false);
+                        setModelManagerInitialTab('recommend');
+                        setShowModelManagerModal(true);
+                      }}
+                      className="text-[10px] text-green-400 hover:underline flex items-center gap-1 font-medium"
+                    >
+                      <Sparkles size={11} /> Gợi ý tải
+                    </button>
                   </div>
-                ) : (
-                  msg.role === 'assistant' && loading && idx === messages.length - 1 && (
-                    <div className="flex flex-col gap-3">
-                      <span className="flex gap-1 items-center h-5">
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></span>
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.4s'}}></span>
-                      </span>
-                      {msg.status && (
-                        <div className="flex items-center gap-2 text-xs text-electric-blue font-medium animate-pulse">
-                          <Loader size={12} className="animate-spin" />
-                          {msg.status}
-                        </div>
-                      )}
+                  
+                  {/* Action buttons (fixed equal height) */}
+                  <div className="grid grid-cols-2 gap-1.5 pb-1.5 border-b border-white/10">
+                    <button
+                      onClick={() => {
+                        setShowModelPicker(false);
+                        setModelManagerInitialTab('recommend');
+                        setShowModelManagerModal(true);
+                      }}
+                      className="h-8 px-2 rounded-lg bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 text-green-400 text-[11px] font-medium flex items-center justify-center gap-1 transition"
+                    >
+                      <Sparkles size={12} /> Gợi ý tải
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowModelPicker(false);
+                        setModelManagerInitialTab('add_custom');
+                        setShowModelManagerModal(true);
+                      }}
+                      className="h-8 px-2 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 text-purple-400 text-[11px] font-medium flex items-center justify-center gap-1 transition"
+                    >
+                      <Plus size={12} /> Thêm model
+                    </button>
+                  </div>
+
+                  {/* Ollama local models */}
+                  <div className="flex items-center justify-between text-[10px] text-green-400 px-2 pt-1 font-medium">
+                    <span>Ollama (Trên máy):</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fetchLocalModels();
+                      }}
+                      className="text-gray-400 hover:text-white flex items-center gap-0.5 text-[9px]"
+                      title="Quét lại các mô hình Ollama trên máy"
+                    >
+                      <RefreshCw size={9} /> Quét lại
+                    </button>
+                  </div>
+
+                  {availableLocalModels.length > 0 ? (
+                    availableLocalModels.map(m => (
+                      <button
+                        key={m.name}
+                        onClick={() => handleSwitchModel('ollama', m.name)}
+                        className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg flex items-center justify-between hover:bg-white/10 transition ${
+                          currentProvider === 'ollama' && currentModel === m.name ? 'bg-green-500/20 text-green-300 font-semibold' : 'text-gray-300'
+                        }`}
+                      >
+                        <span className="truncate">{m.name}</span>
+                        <span className="text-[10px] text-gray-500">{m.size_gb}GB</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-2 py-1 text-[11px] text-gray-500 italic">
+                      Chưa có model Ollama nào.{' '}
+                      <button 
+                        onClick={() => {
+                          setShowModelPicker(false);
+                          setModelManagerInitialTab('recommend');
+                          setShowModelManagerModal(true);
+                        }}
+                        className="text-green-400 underline font-normal"
+                      >
+                        Tải ngay (1-click)
+                      </button>
                     </div>
-                  )
-                )}
-              </div>
-              {msg.citations && msg.citations.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {msg.citations.map((cit, cidx) => (
-                    <div key={cidx} className="flex items-center gap-1.5 text-xs bg-electric-blue/10 border border-electric-blue/30 text-electric-blue px-2.5 py-1 rounded-full cursor-pointer hover:bg-electric-blue/20 transition-colors">
-                      <span className="font-semibold">{cit.marker}</span>
-                      <ChevronRight size={12} className="opacity-50" />
-                      <span className="truncate max-w-[150px] opacity-80">{cit.filename}</span>
-                    </div>
-                  ))}
+                  )}
+
+                  {/* Custom Saved Models */}
+                  {customSavedModels.length > 0 && (
+                    <>
+                      <div className="text-[10px] text-purple-400 px-2 pt-2 font-medium">Model tùy chỉnh đã lưu:</div>
+                      {customSavedModels.map((cm, idx) => {
+                        const targetModel = cm.model_name || cm.model;
+                        return (
+                          <button
+                            key={cm.id || idx}
+                            onClick={() => {
+                              if (cm.requires_api_key && !cm.api_key) {
+                                setShowModelPicker(false);
+                                setModelManagerInitialTab('add_custom');
+                                setShowModelManagerModal(true);
+                                showToast('Nhập lại API key hoặc chọn dùng khóa đã cấu hình trong trình quản lý mô hình.');
+                              } else void handleSwitchModel(cm.provider, targetModel, cm.base_url, cm.api_key);
+                            }}
+                            className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition flex items-center justify-between ${
+                              currentModel === targetModel ? 'bg-purple-500/20 text-purple-300 font-semibold' : 'text-gray-300'
+                            }`}
+                          >
+                            <span className="truncate">{cm.name || targetModel}</span>
+                            <span className="text-[9px] uppercase bg-white/10 px-1 rounded text-gray-400">{cm.provider}</span>
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+
+                  <div className="text-[10px] text-orange-400 px-2 pt-2 font-medium">9Router Gateway (Mới nhất):</div>
+                  <button
+                    onClick={() => handleSwitchModel('9router', 'kr/claude-sonnet-4.5')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition flex items-center justify-between ${
+                      currentProvider === '9router' && currentModel === 'kr/claude-sonnet-4.5' ? 'bg-orange-500/20 text-orange-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    <span>Claude 3.7 / 4.5 Sonnet</span>
+                    <span className="text-[9px] bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-mono">Top 1</span>
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel('9router', 'kr/deepseek-3.2')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition flex items-center justify-between ${
+                      currentProvider === '9router' && currentModel === 'kr/deepseek-3.2' ? 'bg-orange-500/20 text-orange-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    <span>DeepSeek V3.2</span>
+                    <span className="text-[9px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-mono">Mới</span>
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel('9router', 'kr/auto')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition flex items-center justify-between ${
+                      currentProvider === '9router' && currentModel === 'kr/auto' ? 'bg-orange-500/20 text-orange-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    <span>Auto Router (Tự chọn model tốt)</span>
+                    <span className="text-[9px] bg-green-500/30 text-green-300 px-1.5 py-0.5 rounded font-mono">Auto</span>
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel('9router', 'kr/glm-5')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition ${
+                      currentProvider === '9router' && currentModel === 'kr/glm-5' ? 'bg-orange-500/20 text-orange-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    GLM 5.0
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel('9router', 'gemini-2.5-flash')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition ${
+                      currentProvider === '9router' && currentModel === 'gemini-2.5-flash' ? 'bg-orange-500/20 text-orange-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    Gemini 2.5 Flash
+                  </button>
+
+                  <div className="text-[10px] text-blue-400 px-2 pt-2 font-medium">Cloud AI:</div>
+                  <button
+                    onClick={() => handleSwitchModel('gemini', 'gemini-2.5-flash')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition ${
+                      currentProvider === 'gemini' ? 'bg-blue-500/20 text-blue-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    Google Gemini (2.5 Flash)
+                  </button>
+                  <button
+                    onClick={() => handleSwitchModel('groq', 'llama-3.3-70b-versatile')}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition ${
+                      currentProvider === 'groq' ? 'bg-purple-500/20 text-purple-300 font-semibold' : 'text-gray-300'
+                    }`}
+                  >
+                    Groq (Llama-3.3 70B)
+                  </button>
+
+                  <div className="pt-1.5 mt-1 border-t border-white/10 flex items-center justify-between">
+                    <button
+                      onClick={() => { setShowModelPicker(false); setShowSettings(true); }}
+                      className="text-left text-[11px] text-blue-400 hover:underline px-2 py-1 flex items-center gap-1"
+                    >
+                      <Settings size={12} /> Cài đặt API...
+                    </button>
+                    <button
+                      onClick={() => { 
+                        setShowModelPicker(false); 
+                        setModelManagerInitialTab('installed'); 
+                        setShowModelManagerModal(true); 
+                      }}
+                      className="text-left text-[11px] text-gray-400 hover:text-white px-2 py-1 flex items-center gap-1"
+                    >
+                      <Cpu size={12} /> Quản lý máy...
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
 
-      <div className="pt-4">
-        <div className="glass-panel p-2 flex items-end gap-2 rounded-2xl relative group focus-within:shadow-[0_0_20px_rgba(37,99,235,0.2)] focus-within:border-electric-blue/40 transition-all duration-300">
-          
-          <div className="relative">
-            {showUrlInput && (
-              <div className="absolute bottom-full left-0 mb-2 bg-surface border border-white/10 p-2 rounded-lg shadow-xl flex gap-2 z-20 w-80">
-                <input 
-                  type="text" 
-                  value={urlInputValue}
-                  onChange={(e) => setUrlInputValue(e.target.value)}
-                  placeholder="Dán link YouTube / Website..." 
-                  className="flex-1 bg-black/30 text-sm px-3 py-2 rounded-md outline-none text-white border border-white/10 focus:border-electric-blue"
-                  onKeyDown={(e) => e.key === 'Enter' && handleUrlSubmit()}
-                />
-                <button 
-                  onClick={handleUrlSubmit}
-                  className="bg-electric-blue px-3 rounded-md text-white hover:bg-blue-600 transition-colors"
-                >
-                  <Check size={16}/>
-                </button>
-              </div>
-            )}
-            <button 
-              onClick={() => setShowUrlInput(!showUrlInput)}
-              className="p-3 text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-all"
-              title="Nhập Link Website hoặc YouTube"
+          <details className="studio-header-actions relative shrink-0" onBlur={event => {
+            if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.removeAttribute('open');
+          }}>
+            <summary className={`list-none cursor-pointer h-9 px-3 rounded-xl border flex items-center gap-2 text-xs font-semibold ${isDark ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>Tác vụ <ChevronDown size={13} /></summary>
+            <div className={`studio-actions-menu absolute right-0 top-full mt-2 z-30 w-64 max-h-[65dvh] overflow-y-auto p-2 rounded-xl border shadow-xl ${isDark ? 'bg-[#1c1e24] border-white/15' : 'bg-white border-slate-200'}`} onClick={event => event.currentTarget.closest('details').removeAttribute('open')}>
+            {/* Mobile Column Switchers */}
+            <button
+              onClick={() => setMobileActiveTab('docs')}
+              className="lg:hidden h-8 w-8 rounded-xl border border-white/10 bg-white/5 text-gray-300 hover:text-white flex items-center justify-center shrink-0"
+              title="Mở danh sách tài liệu"
             >
-              <LinkIcon size={20} />
+              <FileText size={14} />
             </button>
-          </div>
-          
-          <button 
-            onClick={() => document.getElementById('file-upload').click()}
-            className="p-3 text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-all"
-            title="Tải lên PDF/Doc/Audio"
-          >
-            <Paperclip size={20} />
-          </button>
-          <input 
-            type="file" 
-            id="file-upload" 
-            className="hidden" 
-            onChange={handleFileUpload}
-            accept=".pdf,.docx,.txt,.md,.csv,.png,.jpg,.jpeg,.mp3,.wav,.m4a"
-          />
+            <button
+              onClick={() => setMobileActiveTab('studio')}
+              className="lg:hidden h-8 w-8 rounded-xl border border-white/10 bg-white/5 text-gray-300 hover:text-white flex items-center justify-center shrink-0"
+              title="Mở cẩm nang & công cụ học"
+            >
+              <BookOpen size={14} />
+            </button>
 
-          <textarea 
-            className="flex-1 bg-transparent border-none px-2 py-3 text-[15px] text-white focus:outline-none focus:ring-0 resize-none min-h-[50px] max-h-[150px] scrollbar-hide"
-            placeholder="Hỏi bất cứ điều gì về tài liệu..."
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            rows={1}
-            disabled={loading}
-          />
-          <button 
-            className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300 ${
-              input.trim() && !loading 
-                ? 'bg-electric-blue text-white hover:bg-blue-500 shadow-[0_0_15px_rgba(37,99,235,0.4)]' 
-                : 'bg-white/5 text-gray-500 cursor-not-allowed'
-            }`}
-            onClick={handleSend} 
-            disabled={!input.trim() || loading}
-          >
-            <Send size={20} className={input.trim() && !loading ? 'translate-x-0.5 -translate-y-0.5' : ''} />
-          </button>
-        </div>
-        <div className="text-center mt-3 text-xs text-gray-500">
-          NotebookLM Mini có thể đưa ra thông tin không chính xác. Hãy luôn kiểm tra lại nguồn trích dẫn.
-        </div>
-      </div>
-      </div>
+            {/* Chat Search Toggle Button */}
+            <button 
+              onClick={() => {
+                setShowChatSearch(prev => !prev);
+                setChatSearchQuery('');
+              }}
+              className={`h-8 w-8 rounded-xl border transition flex items-center justify-center font-medium shrink-0 ${
+                showChatSearch 
+                  ? 'border-blue-500 bg-blue-500/20 text-blue-300' 
+                  : (isDark ? 'border-white/10 bg-white/5 text-gray-300 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200')
+              }`}
+              title="Tìm kiếm trong lịch sử chat (Ctrl + F)"
+            >
+              <Search size={14} />
+            </button>
 
-      <div className="w-80 lg:w-96 flex-shrink-0 h-full p-4 overflow-y-auto scrollbar-hide bg-[#131314] flex flex-col gap-6 border-l border-white/5">
-        <div className="glass-panel p-5 rounded-2xl border border-white/10">
-          <h3 className="text-lg font-bold text-electric-blue mb-3 flex items-center gap-2">
-            <BookOpen size={20} /> Cẩm Nang Học Tập
-          </h3>
-          
-          {documents.length === 0 ? (
-            <div className="text-gray-400 text-sm mt-4 text-center">
-              Vui lòng tải lên tài liệu để tạo Cẩm nang học tập.
+            {/* Clear Chat Button */}
+            <button 
+              onClick={handleClearAllMessages}
+              disabled={loading || messages.length === 0}
+              className={`h-8 w-8 rounded-xl border transition flex items-center justify-center font-medium disabled:opacity-30 shrink-0 ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/20' : 'border-slate-200 bg-slate-100 text-slate-500 hover:text-red-500 hover:bg-red-50'
+              }`}
+              title="Xóa toàn bộ hội thoại chat"
+            >
+              <Trash2 size={14} />
+            </button>
+
+            {/* Share & Export Notebook Modal */}
+            <button 
+              onClick={() => setShowShareModal(true)}
+              className={`h-8 w-8 rounded-xl border transition flex items-center justify-center font-medium shrink-0 ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-300 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+              }`}
+              title="Chia sẻ & Xuất dữ liệu sổ tay"
+            >
+              <Share2 size={14} />
+            </button>
+
+            {/* Export Chat to Markdown */}
+            <button 
+              onClick={handleExportChat}
+              className={`h-8 w-8 rounded-xl border transition flex items-center justify-center font-medium shrink-0 ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-300 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+              }`}
+              title="Xuất toàn bộ đoạn chat ra file Markdown (.md)"
+            >
+              <FileDown size={14} />
+            </button>
+
+            {/* AI Evaluation */}
+            <button 
+              onClick={handleEvaluate}
+              disabled={evaluating || loading || !messages.some(message => message.role === 'user')}
+              className="h-8 text-xs px-2.5 rounded-xl border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 transition disabled:opacity-50 flex items-center gap-1.5 font-medium shrink-0"
+              title="Đánh giá mức độ hiểu bài và chất lượng câu hỏi"
+            >
+              {evaluating ? <Loader size={13} className="animate-spin" /> : <Award size={13} />}
+              <span className="hidden sm:inline">{evaluating ? "Đang chấm..." : "Đánh giá"}</span>
+            </button>
+
+            {/* Divider */}
+            <div className={`w-[1px] h-4 my-auto shrink-0 mx-0.5 ${isDark ? 'bg-white/10' : 'bg-slate-200'}`} />
+
+            {/* Theme Toggle (Dark / Light) */}
+            <button 
+              onClick={toggleTheme}
+              className={`h-8 w-8 rounded-xl flex items-center justify-center transition shrink-0 border ${
+                isDark ? 'text-amber-400 border-white/10 bg-white/5 hover:bg-white/10' : 'text-slate-700 border-slate-200 bg-slate-100 hover:bg-slate-200'
+              }`}
+              title={isDark ? "Chuyển sang Giao diện Sáng (Light Theme)" : "Chuyển sang Giao diện Tối (Dark Theme)"}
+            >
+              {isDark ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+
+            {/* Shortcuts Help */}
+            <button 
+              onClick={() => setShowShortcutsModal(true)}
+              className={`h-8 w-8 rounded-xl flex items-center justify-center transition shrink-0 border ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+              }`}
+              title="Phím tắt nhanh (Shortcuts)"
+            >
+              <HelpCircle size={14} />
+            </button>
+
+            {/* System Health Diagnostics */}
+            <button 
+              onClick={() => setShowSystemHealth(true)}
+              className={`h-8 px-2.5 rounded-xl flex items-center gap-1.5 transition shrink-0 border text-xs font-medium cursor-pointer ${
+                isDark ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              }`}
+              title="Chẩn đoán sức khỏe hệ thống AI & Vector DB (Self-Diagnostics)"
+            >
+              <Activity size={13} />
+              <span className="hidden xl:inline">Hệ thống</span>
+            </button>
+
+            {/* Global Settings */}
+            <button 
+              onClick={() => setShowSettings(true)}
+              className={`h-8 w-8 rounded-xl flex items-center justify-center transition shrink-0 border ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+              }`}
+              title="Cài đặt mô hình AI"
+            >
+              <Settings size={14} />
+            </button>
+
+            {/* Delete Notebook */}
+            <button 
+              onClick={deleteNotebook}
+              className={`h-8 w-8 rounded-xl flex items-center justify-center transition shrink-0 border ${
+                isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-red-400 hover:bg-red-500/10' : 'border-slate-200 bg-slate-100 text-slate-500 hover:text-red-500 hover:bg-red-50'
+              }`}
+              title="Xóa sổ tay này"
+            >
+              <Trash2 size={14} />
+            </button>
+
+            {/* Divider */}
+            <div className={`w-[1px] h-4 my-auto shrink-0 mx-0.5 ${isDark ? 'bg-white/10' : 'bg-slate-200'}`} />
+
+            {/* Toggle Right Sidebar Button */}
+            <button
+              onClick={() => setShowRightSidebar(prev => !prev)}
+              className={`h-8 w-8 rounded-xl border transition hidden lg:flex items-center justify-center font-medium shrink-0 cursor-pointer ${
+                !showRightSidebar
+                  ? 'border-purple-500/50 bg-purple-500/20 text-purple-400 shadow-sm'
+                  : (isDark ? 'border-white/10 bg-white/5 text-gray-400 hover:text-white hover:bg-white/10' : 'border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200')
+              }`}
+              title={showRightSidebar ? "Thu gọn Studio Học Tập (Ctrl+J)" : "Mở Studio Học Tập (Ctrl+J)"}
+            >
+              {showRightSidebar ? <PanelRightClose size={15} /> : <PanelRight size={15} />}
+            </button>
             </div>
-          ) : !studyGuide ? (
-            <div className="flex flex-col items-center justify-center py-6 text-gray-400 gap-3">
-              <Loader className="animate-spin text-electric-blue" size={24} />
-              <span className="text-sm">Đang phân tích tài liệu...</span>
-            </div>
-          ) : (
-            <div className="space-y-4 text-sm mt-4">
-              <div>
-                <h4 className="font-semibold text-gray-300 mb-1">Tóm tắt:</h4>
-                <p className="text-gray-400 leading-relaxed">{studyGuide.summary}</p>
-              </div>
-              <div className="pt-2 border-t border-white/10">
-                <h4 className="font-semibold text-gray-300 mb-1">Câu hỏi thường gặp:</h4>
-                <p className="text-gray-400 whitespace-pre-wrap">{studyGuide.faq}</p>
-              </div>
-
-              <div className="pt-4 flex gap-2 border-t border-white/10">
-                <button 
-                  onClick={() => setShowQuiz(true)}
-                  disabled={!studyGuide.quiz || studyGuide.quiz.length === 0}
-                  className="flex-1 bg-white/5 hover:bg-electric-blue/20 text-electric-blue border border-electric-blue/30 py-2 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <Brain size={16} /> Quiz
-                </button>
-                <button 
-                  onClick={() => { setShowFlashcards(true); setCurrentFlashcard(0); setFlashcardFlipped(false); }}
-                  disabled={!studyGuide.flashcards || studyGuide.flashcards.length === 0}
-                  className="flex-1 bg-white/5 hover:bg-neon-purple/20 text-neon-purple border border-neon-purple/30 py-2 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <Layers size={16} /> Thẻ từ
-                </button>
-              </div>
-            </div>
-          )}
+          </details>
         </div>
 
-        <div className="glass-panel p-5 rounded-2xl border border-white/10">
-          <h3 className="text-lg font-bold text-neon-purple mb-3 flex items-center gap-2">
-            <Headphones size={20} /> Trò Chuyện AI (Podcast)
-          </h3>
-          
-          {!audioUrl ? (
-            <div className="flex flex-col gap-3">
-              <p className="text-sm text-gray-400">Tạo bản thu âm trò chuyện giữa 2 MC ảo dựa trên tài liệu.</p>
-              <button 
-                onClick={generatePodcast}
-                disabled={podcastGenerating || !studyGuide}
-                className="w-full bg-gradient-to-r from-electric-blue to-neon-purple hover:opacity-90 text-white font-medium py-2 rounded-xl transition-all disabled:opacity-50 flex justify-center items-center gap-2"
+        {/* Feature #4: Chat Search Bar */}
+        {showChatSearch && (
+          <div className={`mb-3 px-3.5 py-2 rounded-2xl shadow-lg flex items-center justify-between gap-3 text-xs animate-fade-in border ${
+            isDark ? 'bg-white/[0.04] border-blue-500/40 text-white' : 'bg-white border-blue-400 text-slate-800'
+          }`}>
+            <div className="flex items-center gap-2 flex-1">
+              <Search size={14} className="text-blue-500 shrink-0" />
+              <input
+                type="text"
+                autoFocus
+                value={chatSearchQuery}
+                onChange={e => setChatSearchQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (e.shiftKey) handlePrevMatch();
+                    else handleNextMatch();
+                  }
+                }}
+                placeholder="Tìm kiếm trong các tin nhắn (Enter để tìm tiếp, Shift+Enter lùi)..."
+                className={`w-full bg-transparent border-none outline-none text-xs ${
+                  isDark ? 'text-white placeholder-gray-500' : 'text-slate-900 placeholder-slate-400'
+                }`}
+              />
+            </div>
+
+            <div className={`flex items-center gap-2 shrink-0 font-mono text-[11px] ${
+              isDark ? 'text-gray-400' : 'text-slate-500'
+            }`}>
+              {chatSearchQuery.trim() && (
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-blue-400">
+                    {matchedIndices.length > 0 ? `${currentMatchIdx + 1}/${matchedIndices.length}` : '0/0'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handlePrevMatch}
+                    disabled={matchedIndices.length === 0}
+                    className="p-1 hover:text-blue-400 rounded hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                    title="Kết quả trước (Shift + Enter)"
+                  >
+                    <ArrowUp size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleNextMatch}
+                    disabled={matchedIndices.length === 0}
+                    className="p-1 hover:text-blue-400 rounded hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                    title="Kết quả tiếp theo (Enter)"
+                  >
+                    <ArrowDown size={13} />
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowChatSearch(false);
+                  setChatSearchQuery('');
+                }}
+                className="p-1 hover:text-red-400 rounded hover:bg-white/10 cursor-pointer"
+                title="Đóng tìm kiếm (Esc)"
               >
-                {podcastGenerating ? <RefreshCw className="animate-spin" size={18} /> : <Headphones size={18} />}
-                {podcastGenerating ? "Đang tạo (vui lòng đợi)..." : "Tạo Podcast"}
+                <X size={14} />
               </button>
             </div>
-          ) : (
-             <div className="mt-2">
-               <audio controls className="w-full h-10 rounded outline-none" src={audioUrl} />
-             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        )}
 
-      {showQuiz && studyGuide?.quiz && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="glass-panel w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl border border-electric-blue/30 overflow-hidden shadow-2xl">
-            <div className="p-4 border-b border-white/10 flex justify-between items-center bg-electric-blue/10">
-              <h2 className="text-xl font-bold flex items-center gap-2"><Brain className="text-electric-blue" /> Trắc nghiệm kiến thức</h2>
-              <button onClick={() => {setShowQuiz(false); setQuizAnswers({}); setQuizSubmitted(false);}} className="text-gray-400 hover:text-white"><X size={24}/></button>
+        {/* Message Stream Area */}
+        <div ref={messageListRef} onScroll={event => {
+          const list = event.currentTarget;
+          stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
+        }} role="log" aria-label="Hội thoại" aria-busy={loading} className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-5 pb-4">
+          {messages.length === 0 && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-3 py-8 max-w-xl mx-auto">
+              <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-5 ${isDark ? 'bg-blue-500/10' : 'bg-blue-50'}`}><BookOpen size={30} className="text-blue-500" /></div>
+              <p className="text-xs uppercase tracking-[0.18em] text-blue-500 font-semibold mb-3">Không gian học tập của bạn</p>
+              <h2 className="text-2xl sm:text-3xl font-bold mb-3">{documents.length ? 'Bạn muốn tìm hiểu điều gì?' : 'Bắt đầu từ tài liệu của bạn'}</h2>
+              <p className={`text-sm leading-6 mb-6 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{documents.length ? 'Đặt câu hỏi, yêu cầu tóm tắt hoặc mở Học tập để tạo bài ôn. Câu trả lời sẽ dẫn về nguồn bạn đã chọn.' : 'Thêm PDF, Word, slide, đường dẫn hoặc dán văn bản. Sau đó đặt câu hỏi và tạo học liệu từ chính nội dung đó.'}</p>
+              {!documents.length ? <div className="flex flex-wrap gap-3 justify-center">
+                <button disabled={uploading} onClick={() => document.getElementById('file-upload').click()} className="rounded-xl px-5 py-3 bg-blue-600 text-white font-semibold text-sm flex items-center gap-2"><Plus size={17} /> Thêm tài liệu</button>
+                <button disabled={uploading} onClick={() => setShowPasteTextModal(true)} className="rounded-xl px-5 py-3 border border-current/20 text-sm font-medium">Dán văn bản</button>
+              </div> : <div className="grid gap-2 w-full sm:grid-cols-2">
+                {['Tóm tắt những ý chính trong tài liệu', 'Giải thích các khái niệm quan trọng', 'Đưa ra ví dụ để dễ hiểu hơn', 'Gợi ý lộ trình ôn tập từ tài liệu'].map(question => <button key={question} onClick={() => { setInput(question); chatInputRef.current?.focus(); }} className={`text-left text-sm p-3.5 border rounded-xl transition ${isDark ? 'bg-white/5 border-white/10 hover:border-blue-400/50' : 'bg-white border-slate-200 hover:border-blue-400'}`}>{question}<ChevronRight size={14} className="inline ml-2 text-blue-500" /></button>)}
+              </div>}
+              <p className="mt-6 text-xs opacity-60">1. Thêm nguồn &nbsp; 2. Đặt câu hỏi &nbsp; 3. Ôn tập theo cách của bạn</p>
             </div>
-            <div className="p-6 overflow-y-auto flex-1 space-y-6">
-              {studyGuide.quiz.map((q, idx) => (
-                <div key={idx} className="bg-white/5 p-4 rounded-xl border border-white/10">
-                  <p className="font-semibold text-lg mb-3">{idx + 1}. {q.question}</p>
-                  <div className="space-y-2">
-                    {q.options.map((opt, oIdx) => {
-                      const isSelected = quizAnswers[idx] === oIdx;
-                      const isCorrect = q.answer === oIdx;
-                      let btnClass = "w-full text-left p-3 rounded-lg border transition-all ";
-                      
-                      if (!quizSubmitted) {
-                        btnClass += isSelected ? "border-electric-blue bg-electric-blue/20 text-white" : "border-white/10 hover:bg-white/10 text-gray-300";
-                      } else {
-                        if (isCorrect) btnClass += "border-green-500 bg-green-500/20 text-white";
-                        else if (isSelected && !isCorrect) btnClass += "border-red-500 bg-red-500/20 text-white";
-                        else btnClass += "border-white/5 text-gray-500 opacity-50";
-                      }
+          )}
+          {messages.map((msg, idx) => {
+            const isMatchedInSearch = chatSearchQuery.trim() && msg.content?.toLowerCase().includes(chatSearchQuery.toLowerCase());
+            const isCurrentMatch = isMatchedInSearch && matchedIndices[currentMatchIdx] === idx;
 
-                      return (
-                        <button 
-                          key={oIdx} 
-                          disabled={quizSubmitted}
-                          onClick={() => setQuizAnswers({...quizAnswers, [idx]: oIdx})}
-                          className={btnClass}
-                        >
-                          <div className="flex justify-between items-center">
-                            <span>{opt}</span>
-                            {quizSubmitted && isCorrect && <Check size={18} className="text-green-500" />}
-                            {quizSubmitted && isSelected && !isCorrect && <XCircle size={18} className="text-red-500" />}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
+            return (
+              <motion.div 
+                key={msg.id || msg.clientId || idx}
+                id={`msg-${idx}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={spring.pop}
+                className={`flex gap-3.5 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'} ${
+                  isMatchedInSearch 
+                    ? (isCurrentMatch ? 'ring-2 ring-blue-400 bg-blue-500/15 rounded-2xl p-1' : 'ring-1 ring-blue-500/40 bg-blue-500/5 rounded-2xl p-1')
+                    : ''
+                }`}
+              >
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white font-bold text-xs ${
+                  msg.role === 'user' ? 'bg-gradient-to-br from-purple-600 to-pink-500' : 'bg-gradient-to-br from-blue-600 to-cyan-500'
+                }`}>
+                  {msg.role === 'assistant' ? <Bot size={16} /> : <User size={16} />}
                 </div>
+
+                <div className={`flex flex-col gap-1.5 max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className={`group/msg relative px-4 py-3 rounded-2xl text-[14px] leading-relaxed shadow-lg ${
+                    msg.role === 'user' 
+                      ? (isDark ? 'bg-[#252830] border border-white/10 text-white' : 'bg-blue-600 border border-blue-700 text-white') + ' rounded-tr-sm' 
+                      : (isDark ? 'bg-[#181a20] border border-white/10 text-gray-100' : 'bg-white border border-slate-200 text-slate-800 shadow-sm') + ' rounded-tl-sm w-full'
+                  }`}>
+                    {/* Action buttons on message hover: TTS, Pin Note, Copy, Delete */}
+                    <div className={`message-actions flex justify-end gap-1 mb-1 opacity-100 lg:opacity-0 lg:group-hover/msg:opacity-100 focus-within:opacity-100 transition z-10 ${msg.role === 'user' ? 'user-actions' : ''}`}>
+                      {msg.content && (
+                        <>
+                          {/* TTS Play/Stop Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleSpeakMessage(msg.content, idx)}
+                            className={`p-1.5 rounded-lg backdrop-blur-sm transition shadow ${
+                              speakingMsgIdx === idx 
+                                ? 'bg-blue-600 text-white animate-pulse' 
+                                : 'bg-black/60 hover:bg-black/90 text-gray-400 hover:text-white'
+                            }`}
+                            title={speakingMsgIdx === idx ? "Dừng đọc" : "Đọc to câu trả lời (TTS tiếng Việt)"}
+                          >
+                            {speakingMsgIdx === idx ? <VolumeX size={12} /> : <Volume2 size={12} />}
+                          </button>
+
+                          {/* Pin to Notes Button */}
+                          <button
+                            type="button"
+                            onClick={() => handlePinNote(msg.content, `Ghi chú từ AI (${new Date().toLocaleTimeString('vi-VN')})`, 'chat')}
+                            className="p-1.5 rounded-lg bg-black/60 hover:bg-amber-500/80 text-gray-400 hover:text-white transition shadow backdrop-blur-sm"
+                            title="Ghim vào Bảng Ghi chú Nghiên cứu"
+                          >
+                            <BookmarkPlus size={12} />
+                          </button>
+
+                          {/* Copy Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMessage(msg.content, idx)}
+                            className="p-1.5 rounded-lg bg-black/60 hover:bg-black/90 text-gray-400 hover:text-white transition shadow backdrop-blur-sm"
+                            title="Sao chép nội dung tin nhắn"
+                          >
+                            {copiedMsgIdx === idx ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMessage(msg.id, idx)}
+                        disabled={loading}
+                        className="p-1.5 rounded-lg bg-black/60 hover:bg-red-500/80 text-gray-400 hover:text-white transition shadow backdrop-blur-sm"
+                        title="Xóa tin nhắn này"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+
+                    {/* Message Content: MarkdownRenderer for assistant */}
+                    {msg.content ? (
+                      <div className="break-words min-w-0">
+                        {msg.role === 'assistant' ? (
+                          <MarkdownRenderer content={msg.content} isDark={isDark} />
+                        ) : (
+                          <div className="whitespace-pre-wrap">{msg.content}</div>
+                        )}
+                        {msg.role === 'assistant' && loading && idx === messages.length - 1 && (
+                          <span className="inline-block w-2 h-3.5 bg-blue-500 animate-pulse ml-1 align-middle rounded-sm"></span>
+                        )}
+                        {/* Quick 1-click recovery buttons if Ollama is offline */}
+                        {msg.content?.includes("Không thể kết nối tới Ollama") && (
+                          <div className="mt-3 pt-3 border-t border-amber-500/20 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => setShowSettings(true)}
+                              className="px-3 py-1.5 rounded-xl bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/40 text-orange-300 text-xs font-semibold flex items-center gap-1.5 transition shadow cursor-pointer"
+                            >
+                              <Cloud size={13} /> Cấu hình mô hình trực tuyến
+                            </button>
+                            <button
+                              onClick={() => {
+                                setModelManagerInitialTab('recommend');
+                                setShowModelManagerModal(true);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-green-500/20 hover:bg-green-500/30 border border-green-500/40 text-green-300 text-xs font-semibold flex items-center gap-1.5 transition shadow cursor-pointer"
+                            >
+                              <Cpu size={13} /> Quản lý & Tải Model cho máy
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : msg.role === 'assistant' && loading && idx === messages.length - 1 ? (
+                      /* Feature #3: Streaming typing wave animation */
+                      <div className="flex flex-col gap-2.5 py-1">
+                        <div className="flex gap-1.5 items-center h-5">
+                          <span className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></span>
+                          <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce [animation-delay:0.15s]"></span>
+                          <span className="w-2 h-2 bg-pink-400 rounded-full animate-bounce [animation-delay:0.3s]"></span>
+                        </div>
+                        {msg.status && (
+                          <div className="flex items-center gap-2 text-xs text-blue-400 font-medium px-2.5 py-1 rounded-xl bg-blue-500/10 border border-blue-500/20 w-fit animate-pulse">
+                            <Loader size={12} className="animate-spin" />
+                            <span>{msg.status}</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-gray-400 text-xs italic">
+                        (Không có nội dung phản hồi)
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Feature #13: Clickable Citations with preview & highlight */}
+                  {msg.citations && msg.citations.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {msg.citations.map((cit, cidx) => (
+                        <button 
+                          key={cidx} 
+                          onClick={() => handleCitationClick(cit)}
+                          className="flex items-center gap-1 text-[11px] bg-blue-500/10 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 px-2.5 py-0.5 rounded-full transition cursor-pointer shadow-sm"
+                          title="Bấm để xem đoạn trích dẫn trong tài liệu gốc"
+                        >
+                          <span className="font-semibold text-blue-400">{cit.marker}</span>
+                          <ChevronRight size={10} className="opacity-50" />
+                          <span className="truncate max-w-[150px]">{cit.filename}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input Bar with Feature #10: Voice Input */}
+        <div className="pt-2">
+          {/* Consolidated Single Control Bar */}
+          <div className="flex items-center justify-between pb-2 px-1 gap-2 flex-wrap text-xs">
+            {/* Left: Persona Pills with Animate UI Sliding Indicator */}
+            <div className="flex items-center gap-1 shrink-0">
+              {[
+                { id: 'strict', name: 'Bám sát', icon: Shield, activeClass: 'bg-blue-500/20 text-blue-300 border-blue-500/50' },
+                { id: 'socratic', name: 'Gia sư', icon: Sparkles, activeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/50' },
+                { id: 'critic', name: 'Phản biện', icon: Flame, activeClass: 'bg-rose-500/20 text-rose-300 border-rose-500/50' },
+              ].map(p => {
+                const Icon = p.icon;
+                const isSelected = chatPersona === p.id;
+                return (
+                  <motion.button
+                    key={p.id}
+                    type="button"
+                    whileTap={{ scale: 0.95 }}
+                    transition={spring.press}
+                    onClick={() => setChatPersona(p.id)}
+                    className={`relative flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer ${
+                      isSelected 
+                        ? p.activeClass 
+                        : (isDark ? 'bg-white/5 border-white/10 text-gray-400 hover:text-white hover:bg-white/10' : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-200')
+                    }`}
+                    title={PERSONA_CONFIGS[p.id]?.desc}
+                  >
+                    {isSelected && (
+                      <motion.div
+                        layoutId="personaIndicator"
+                        className="absolute inset-0 rounded-lg bg-white/10 pointer-events-none"
+                        transition={spring.selection}
+                      />
+                    )}
+                    <span className="relative z-10 flex items-center gap-1">
+                      <Icon size={12} />
+                      <span>{p.name}</span>
+                    </span>
+                  </motion.button>
+                );
+              })}
+            </div>
+
+            {/* Right: Quick Tools (Context badge, Suggestions toggle, Notes) */}
+            <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+              {/* Document Context Pill */}
+              {documents.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectedDocs.size < documents.length ? handleSelectAllDocs : handleDeselectAllDocs}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
+                    selectedDocs.size === 0
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                      : (isDark ? 'bg-white/5 border-white/10 text-gray-300 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-700 hover:text-slate-900')
+                  }`}
+                  title={selectedDocs.size < documents.length ? "Bấm để chọn tất cả tài liệu" : "Bấm để bỏ chọn tất cả"}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    selectedDocs.size === 0 ? 'bg-amber-400' : selectedDocs.size === documents.length ? 'bg-blue-400' : 'bg-emerald-400'
+                  }`} />
+                  <span>
+                    {selectedDocs.size === 0 
+                       ? 'Chưa chọn nguồn'
+                      : selectedDocs.size === documents.length 
+                        ? `Tất cả (${documents.length})` 
+                        : `${selectedDocs.size}/${documents.length} tệp`}
+                  </span>
+                </button>
+              )}
+
+              {/* Suggestions toggle chip */}
+              {suggestedQuestions.length > 0 && !loading && (
+                <button
+                  type="button"
+                  onClick={() => setShowSuggestionsDrawer(prev => !prev)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
+                    showSuggestionsDrawer
+                      ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40 shadow-sm'
+                      : (isDark ? 'bg-white/5 border-white/10 text-gray-400 hover:text-yellow-300' : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-yellow-700')
+                  }`}
+                  title="Xem các câu hỏi gợi ý từ tài liệu"
+                >
+                  <Sparkles size={11} className="text-yellow-400" />
+                  <span>Gợi ý ({suggestedQuestions.length})</span>
+                  {showSuggestionsDrawer ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                </button>
+              )}
+
+              {/* Pinned Notes shortcut button */}
+              <button
+                type="button"
+                onClick={() => setShowNotesModal(true)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
+                  pinnedNotes.length > 0 
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
+                    : (isDark ? 'bg-white/5 border-white/10 text-gray-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900')
+                }`}
+                title="Xem và quản lý các ghi chú đã ghim của sổ tay này"
+              >
+                <Bookmark size={12} className="text-amber-400" />
+                <span>Ghi chú {pinnedNotes.length > 0 && `(${pinnedNotes.length})`}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Floating Stop Generating Indicator */}
+          {loading && (
+            <div className="flex justify-center pb-2 animate-fade-in">
+              <button
+                type="button"
+                onClick={handleStopGenerating}
+                className="flex items-center gap-2 px-3.5 py-1 rounded-full bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 hover:text-white text-xs font-medium shadow-lg transition backdrop-blur-sm cursor-pointer"
+                title="Bấm hoặc nhấn Escape để dừng ngay lập tức"
+              >
+                <Square size={11} className="fill-current text-red-400" />
+                <span>Dừng tạo câu trả lời</span>
+                <span className="text-[10px] bg-black/40 px-1.5 py-0.2 rounded text-gray-300 font-mono">Esc</span>
+              </button>
+            </div>
+          )}
+
+          {/* Collapsible Suggested Questions Chips Drawer */}
+          {(showSuggestionsDrawer || (messages.length === 0 && suggestedQuestions.length > 0)) && !loading && (
+            <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-2 px-1 animate-fade-in">
+              <span className="text-[10px] text-gray-400 uppercase tracking-wider shrink-0 flex items-center gap-1 font-semibold">
+                <Sparkles size={11} className="text-yellow-400" /> Gợi ý:
+              </span>
+              {suggestedQuestions.map((q, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setInput(q);
+                    chatInputRef.current?.focus();
+                  }}
+                  className="max-w-[260px] truncate px-3 py-1 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-blue-500/40 rounded-full text-[11px] text-gray-300 hover:text-white transition whitespace-nowrap shrink-0 shadow-sm cursor-pointer"
+                  title={q}
+                >
+                  {q}
+                </button>
               ))}
             </div>
-            <div className="p-4 border-t border-white/10 bg-black/20 flex justify-end">
-              {!quizSubmitted ? (
-                <button 
-                  onClick={() => setQuizSubmitted(true)}
-                  disabled={Object.keys(quizAnswers).length !== studyGuide.quiz.length}
-                  className="bg-electric-blue hover:bg-blue-600 text-white px-6 py-2 rounded-xl font-medium disabled:opacity-50"
-                >
-                  Nộp bài
-                </button>
-              ) : (
-                <button 
-                  onClick={() => {setQuizAnswers({}); setQuizSubmitted(false);}}
-                  className="bg-white/10 hover:bg-white/20 text-white px-6 py-2 rounded-xl font-medium"
-                >
-                  Làm lại
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {showFlashcards && studyGuide?.flashcards && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="w-full max-w-lg flex flex-col items-center">
-            <div className="w-full flex justify-end mb-4">
-               <button onClick={() => setShowFlashcards(false)} className="text-gray-400 hover:text-white bg-black/50 p-2 rounded-full backdrop-blur-md"><X size={24}/></button>
+          <div className={`p-2 flex items-end gap-2 rounded-2xl relative group focus-within:border-blue-500/60 transition-all duration-300 border ${
+            isDark ? 'bg-[#181a20] border-white/15' : 'bg-white border-slate-300 shadow-sm'
+          }`}>
+            
+            <div className="relative">
+              <button 
+                onClick={() => setShowUrlInput(!showUrlInput)}
+                className={`p-2.5 rounded-xl transition ${
+                  isDark ? 'text-gray-400 hover:text-white bg-white/5 hover:bg-white/10' : 'text-slate-500 hover:text-slate-900 bg-slate-100 hover:bg-slate-200'
+                }`}
+                title="Nhập Link Website hoặc YouTube"
+              >
+                <LinkIcon size={18} />
+              </button>
             </div>
             
-            <div 
-              className="w-full h-80 relative perspective-1000 cursor-pointer" 
-              onClick={() => setFlashcardFlipped(!flashcardFlipped)}
+            <button 
+              onClick={() => document.getElementById('file-upload').click()}
+              className={`p-2.5 rounded-xl transition ${
+                isDark ? 'text-gray-400 hover:text-white bg-white/5 hover:bg-white/10' : 'text-slate-500 hover:text-slate-900 bg-slate-100 hover:bg-slate-200'
+              }`}
+              title="Tải lên PDF/Doc/Audio/Ảnh"
             >
-              <div className={`w-full h-full absolute transition-transform duration-500 transform-style-3d ${flashcardFlipped ? 'rotate-y-180' : ''}`}>
-                {/* Front */}
-                <div className="absolute inset-0 backface-hidden glass-panel border border-neon-purple/30 rounded-2xl flex items-center justify-center p-8 text-center shadow-[0_0_30px_rgba(168,85,247,0.2)]">
-                  <div>
-                    <div className="text-neon-purple/50 text-sm font-bold tracking-widest uppercase mb-4">Khái niệm</div>
-                    <h2 className="text-3xl font-bold text-white">{studyGuide.flashcards[currentFlashcard].front}</h2>
-                    <div className="text-gray-500 text-xs mt-8 absolute bottom-4 left-0 w-full text-center">Chạm để lật mặt sau</div>
-                  </div>
-                </div>
-                {/* Back */}
-                <div className="absolute inset-0 backface-hidden glass-panel border border-electric-blue/30 rounded-2xl flex items-center justify-center p-8 text-center rotate-y-180 shadow-[0_0_30px_rgba(37,99,235,0.2)] bg-gradient-to-br from-black/80 to-electric-blue/10">
-                  <div>
-                    <div className="text-electric-blue/50 text-sm font-bold tracking-widest uppercase mb-4">Định nghĩa</div>
-                    <p className="text-lg text-gray-200 leading-relaxed">{studyGuide.flashcards[currentFlashcard].back}</p>
-                    <div className="text-gray-500 text-xs mt-8 absolute bottom-4 left-0 w-full text-center">Chạm để quay lại</div>
-                  </div>
-                </div>
-              </div>
-            </div>
+              <Paperclip size={18} />
+            </button>
+            <input 
+              type="file" 
+              id="file-upload" 
+              multiple
+              className="hidden" 
+              onChange={handleFileUpload}
+              disabled={uploading}
+              accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.mp3,.wav,.m4a"
+            />
 
-            {/* Controls */}
-            <div className="mt-8 flex items-center gap-6">
-              <button 
-                onClick={() => {setCurrentFlashcard(Math.max(0, currentFlashcard - 1)); setFlashcardFlipped(false);}}
-                disabled={currentFlashcard === 0}
-                className="bg-white/10 hover:bg-white/20 p-3 rounded-full disabled:opacity-30 transition-colors"
-              >
-                <ChevronRight size={24} className="rotate-180" />
-              </button>
-              <span className="font-mono text-gray-400">
-                {currentFlashcard + 1} / {studyGuide.flashcards.length}
-              </span>
-              <button 
-                onClick={() => {setCurrentFlashcard(Math.min(studyGuide.flashcards.length - 1, currentFlashcard + 1)); setFlashcardFlipped(false);}}
-                disabled={currentFlashcard === studyGuide.flashcards.length - 1}
-                className="bg-white/10 hover:bg-white/20 p-3 rounded-full disabled:opacity-30 transition-colors"
-              >
-                <ChevronRight size={24} />
-              </button>
-            </div>
+            <textarea 
+              ref={chatInputRef}
+              aria-label="Câu hỏi về tài liệu"
+              className={`flex-1 bg-transparent border-none px-2 py-2.5 text-sm focus:outline-none resize-none min-h-[44px] max-h-[140px] scrollbar-hide ${
+                isDark ? 'text-white placeholder-gray-500' : 'text-slate-900 placeholder-slate-400'
+              }`}
+              placeholder={!documents.length ? 'Thêm tài liệu để bắt đầu hỏi đáp...' : selectedDocs.size === 0 ? 'Chọn ít nhất một nguồn để đặt câu hỏi...' : 'Hỏi về tài liệu...'}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              rows={1}
+            />
 
+            {/* Voice Input Microphone Button */}
+            <motion.button
+              type="button"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              transition={spring.press}
+              onClick={handleVoiceToggle}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 cursor-pointer ${
+                isRecording 
+                  ? 'bg-red-500 text-white animate-pulse shadow-lg shadow-red-500/50' 
+                  : (isDark ? 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-900')
+              }`}
+              title={isRecording ? "Đang ghi âm giọng nói (Bấm để dừng)..." : "Nói để nhập câu hỏi (Voice Input)"}
+            >
+              {isRecording ? <MicOff size={17} /> : <Mic size={17} />}
+            </motion.button>
+
+            {loading ? (
+              <motion.button 
+                type="button"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                transition={spring.press}
+                className="w-10 h-10 rounded-xl bg-red-600/90 hover:bg-red-500 text-white flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-500/30 group cursor-pointer"
+                onClick={handleStopGenerating} 
+                title="Dừng tạo câu trả lời (Esc)"
+              >
+                <Square size={15} className="fill-current group-hover:scale-110 transition-transform" />
+              </motion.button>
+            ) : (
+              <motion.button 
+                type="button"
+                whileHover={input.trim() ? { scale: 1.05 } : {}}
+                whileTap={input.trim() ? { scale: 0.95 } : {}}
+                transition={spring.press}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                  input.trim()
+                    ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-lg cursor-pointer' 
+                    : (isDark ? 'bg-white/5 text-gray-500 cursor-not-allowed' : 'bg-slate-100 text-slate-400 cursor-not-allowed')
+                }`}
+                onClick={handleSend} 
+                disabled={!input.trim() || uploading || selectedDocs.size === 0}
+                title="Gửi câu hỏi (Enter)"
+              >
+                <Send size={16} className={input.trim() ? 'translate-x-0.5 -translate-y-0.5' : ''} />
+              </motion.button>
+            )}
           </div>
+        </div>
+      </main>
+
+      {/* Cột 3: Right Sidebar (Study Guide, Podcast, Mindmap, Timeline) */}
+      <div className={`${
+        showRightSidebar ? 'lg:flex lg:w-80 xl:lg:w-96' : 'lg:hidden'
+      } studio-panel z-20 flex-shrink-0 h-full p-3.5 overflow-y-auto scrollbar-hide flex-col gap-3 border-l transition-all duration-200 ${
+        isDark ? 'bg-[#14161a] border-white/5' : 'bg-white border-slate-200'
+      } ${mobileActiveTab === 'studio' ? 'flex w-full fixed inset-x-0 top-0 bottom-16 lg:static' : 'hidden'}`}>
+        
+        {/* Top Header Bar - aligned with Col 1 & Col 2 */}
+        <div className={`flex justify-between items-center pb-3 mb-0.5 min-h-[44px] border-b ${
+          isDark ? 'border-white/10' : 'border-slate-200'
+        }`}>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-purple-500 to-blue-500 flex items-center justify-center text-white shadow-sm">
+              <Sparkles size={14} />
+            </div>
+            <div>
+              <h3 className={`font-bold text-sm leading-none ${isDark ? 'text-gray-100' : 'text-slate-800'}`}>Studio Học Tập</h3>
+              <span className="text-[10px] text-gray-400">Trợ lý AI & Bộ công cụ</span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-1">
+            {mobileActiveTab === 'studio' ? (
+              <button onClick={() => setMobileActiveTab('chat')} className="lg:hidden text-xs px-2.5 py-1 rounded-lg bg-white/10 text-white">
+                Đóng
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowRightSidebar(false)}
+                className={`hidden lg:flex items-center justify-center p-1.5 rounded-lg border transition cursor-pointer ${
+                  isDark ? 'text-gray-400 hover:text-white bg-white/5 border-white/10 hover:bg-white/10' : 'text-slate-500 hover:text-slate-900 bg-slate-100 border-slate-200 hover:bg-slate-200'
+                }`}
+                title="Thu gọn Studio (Ctrl+J)"
+              >
+                <PanelRightClose size={15} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Segmented Tab Switcher with Animate UI Sliding Indicator */}
+        <div className={`p-1 rounded-xl flex items-center gap-1 border shrink-0 relative ${
+          isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-100 border-slate-200'
+        }`}>
+          <button
+            type="button"
+            onClick={() => setStudioTab('tools')}
+            className={`relative flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+              studioTab === 'tools'
+                ? 'text-white'
+                : (isDark ? 'text-gray-400 hover:text-white' : 'text-slate-600 hover:text-slate-900')
+            }`}
+          >
+            {studioTab === 'tools' && (
+              <motion.div
+                layoutId="studioTabIndicator"
+                className="absolute inset-0 rounded-lg bg-purple-600 shadow-sm"
+                transition={spring.selection}
+              />
+            )}
+            <span className="relative z-10 flex items-center gap-1.5">
+              <Sparkles size={13} />
+              <span>Công cụ AI</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStudioTab('guide')}
+            className={`relative flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+              studioTab === 'guide'
+                ? 'text-white'
+                : (isDark ? 'text-gray-400 hover:text-white' : 'text-slate-600 hover:text-slate-900')
+            }`}
+          >
+            {studioTab === 'guide' && (
+              <motion.div
+                layoutId="studioTabIndicator"
+                className="absolute inset-0 rounded-lg bg-blue-600 shadow-sm"
+                transition={spring.selection}
+              />
+            )}
+            <span className="relative z-10 flex items-center gap-1.5">
+              <BookOpen size={13} />
+              <span>Cẩm nang học</span>
+            </span>
+          </button>
+        </div>
+        
+        {documents.length > 0 && (guideError || regeneratingGuide || !studyGuide) && <div role={guideError ? 'alert' : 'status'} className={`p-3 rounded-xl text-xs leading-relaxed border ${guideError ? 'border-amber-500/30 bg-amber-500/10 text-amber-600' : 'border-blue-500/20 bg-blue-500/10 text-blue-500'}`}>
+          <p className="flex items-start gap-2">{regeneratingGuide ? <Loader size={15} className="animate-spin shrink-0 mt-0.5" /> : <BookOpen size={15} className="shrink-0 mt-0.5" />}<span>{guideError || (regeneratingGuide ? 'Đang tạo cẩm nang, câu hỏi và thẻ học. Bạn có thể tiếp tục hỏi đáp.' : 'Tạo cẩm nang để mở bài trắc nghiệm và thẻ học từ các nguồn đã chọn.')}</span></p>
+          {!regeneratingGuide && <div className="flex flex-wrap gap-3 mt-2"><button onClick={handleRegenerateStudyGuide} className="font-semibold underline">{guideError ? 'Thử tạo lại' : 'Tạo học liệu'}</button><button onClick={() => setGuidePollVersion(version => version + 1)} className="underline">Kiểm tra lại</button>{guideError && <button onClick={() => setShowSettings(true)} className="underline">Cài đặt AI</button>}</div>}
+        </div>}
+        {/* TAB PANELS WITH ANIMATE UI PRESENCE */}
+        <AnimatePresence mode="wait">
+          {studioTab === 'tools' && (
+            <motion.div 
+              key="tools"
+              initial={{ opacity: 0, y: 6, filter: 'blur(3px)' }}
+              animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+              exit={{ opacity: 0, y: -6, filter: 'blur(3px)' }}
+              transition={spring.slide}
+              className="space-y-3"
+            >
+            {documents.length === 0 ? (
+              <div className={`p-6 rounded-2xl border text-center text-xs leading-relaxed ${
+                isDark ? 'bg-[#181a20] border-white/10 text-gray-400' : 'bg-slate-50 border-slate-200 text-slate-500'
+              }`}>
+                <Sparkles size={24} className="mx-auto text-purple-400 mb-2 opacity-80" />
+                <p className="font-semibold mb-1 text-sm text-gray-200">Chưa có tài liệu nào</p>
+                Tải lên tài liệu ở thanh bên trái để mở khóa toàn bộ 8 công cụ AI phân tích chuyên sâu!
+              </div>
+            ) : (
+              <>
+                {/* Podcast AI Banner Card (Full Width) */}
+                <div className={`p-3 rounded-2xl border transition ${
+                  isDark ? 'bg-[#181a20] border-purple-500/30 text-white' : 'bg-purple-50/50 border-purple-200 text-slate-800'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <Headphones size={15} className="text-purple-400 shrink-0" />
+                      <span className="font-bold text-xs">Podcast AI (2 Giọng đọc)</span>
+                    </div>
+                    <button 
+                      onClick={() => setShowPodcastModal(true)}
+                      disabled={podcastGenerating}
+                      className="text-[10px] bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                      title="Tùy chỉnh chủ đề, giọng đọc và phong cách"
+                    >
+                      <SlidersHorizontal size={10} /> Tùy chỉnh
+                    </button>
+                  </div>
+
+                  {!audioUrl ? (
+                    <button 
+                      onClick={generatePodcast}
+                      disabled={podcastGenerating}
+                      className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:opacity-95 text-white font-semibold text-xs py-2 rounded-xl transition disabled:opacity-40 flex justify-center items-center gap-1.5 cursor-pointer shadow"
+                    >
+                      {podcastGenerating ? <RefreshCw className="animate-spin" size={13} /> : <Headphones size={13} />}
+                      <span>{podcastGenerating ? "Đang tạo âm thanh (vui lòng đợi)..." : "Tạo Podcast AI"}</span>
+                    </button>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <audio controls className="w-full h-8 rounded outline-none" src={audioUrl} onError={() => { setAudioUrl(null); showToast('Không thể phát podcast. Kiểm tra kết nối rồi tạo lại.'); }} />
+                      <div className="flex justify-between items-center text-[10px] text-gray-400 px-1">
+                        <span>Đã tạo sẵn sàng</span>
+                        <button 
+                          onClick={() => setShowPodcastModal(true)}
+                          className="text-purple-400 hover:underline cursor-pointer"
+                        >
+                          Tạo bản thu khác
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2-Column Grid for All Remaining AI Tools */}
+                <div className="grid grid-cols-2 gap-2">
+                  
+                  {/* Tool 1: Mind Map */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Network size={14} className="text-indigo-400 shrink-0" />
+                        <span className="font-bold text-xs truncate">Sơ Đồ Tư Duy</span>
+                      </div>
+                      <button
+                        onClick={() => handleRegenerateMindmap()}
+                        disabled={loadingMindmap}
+                        className={`p-1 rounded transition cursor-pointer ${
+                          isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'
+                        }`}
+                        title="Tái tạo sơ đồ"
+                      >
+                        <RefreshCw size={11} className={loadingMindmap ? 'animate-spin' : ''} />
+                      </button>
+                    </div>
+                    <button
+                      onClick={handleOpenMindmap}
+                      className="w-full bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Network size={12} /> Mở Sơ đồ 2D
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 2: Timeline */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Clock size={14} className="text-emerald-400 shrink-0" />
+                        <span className="font-bold text-xs truncate">Dòng Thời Gian</span>
+                      </div>
+                      <button
+                        onClick={() => handleRegenerateTimeline()}
+                        disabled={loadingTimeline}
+                        className={`p-1 rounded transition cursor-pointer ${
+                          isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'
+                        }`}
+                        title="Tái tạo tiến trình"
+                      >
+                        <RefreshCw size={11} className={loadingTimeline ? 'animate-spin' : ''} />
+                      </button>
+                    </div>
+                    <button
+                      onClick={handleOpenTimeline}
+                      className="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Clock size={12} /> Xem Niên biểu
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 3: Phản biện AI */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <ShieldAlert size={14} className="text-rose-400 shrink-0" />
+                      <span className="font-bold text-xs truncate">Phản Biện AI</span>
+                    </div>
+                    <button
+                      onClick={() => handleRunStudioTool('critique')}
+                      className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <ShieldAlert size={12} /> Báo cáo phản biện
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 4: Kế hoạch hành động */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <ClipboardCheck size={14} className="text-lime-500 shrink-0" />
+                      <span className="font-bold text-xs truncate">Kế Hoạch Thực Thi</span>
+                    </div>
+                    <button
+                      onClick={() => handleRunStudioTool('action_plan')}
+                      className="w-full bg-lime-500/10 hover:bg-lime-500/20 text-lime-500 border border-lime-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <ClipboardCheck size={12} /> Lập Kế hoạch
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 5: Trắc nghiệm */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Brain size={14} className="text-blue-400 shrink-0" />
+                        <span className="font-bold text-xs truncate">Trắc Nghiệm</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-blue-400 font-semibold">
+                        {studyGuide?.quiz?.length || 0} câu
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setShowQuiz(true)}
+                      disabled={!studyGuide?.quiz || studyGuide.quiz.length === 0}
+                      className="w-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition disabled:opacity-40 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Brain size={12} /> Làm bài thi
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 6: Quizlet / Flashcards */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5">
+                        <Layers size={14} className="text-purple-400 shrink-0" />
+                        <span className="font-bold text-xs truncate">Thẻ Quizlet</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-purple-400 font-semibold">
+                        {studyGuide?.flashcards?.length || 0} thẻ
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setShowFlashcards(true)}
+                      disabled={!studyGuide?.flashcards || studyGuide.flashcards.length === 0}
+                      className="w-full bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition disabled:opacity-40 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Layers size={12} /> Học thẻ 3D
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 7: So sánh tài liệu */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <Scale size={14} className="text-amber-400 shrink-0" />
+                      <span className="font-bold text-xs truncate">So Sánh Tài Liệu</span>
+                    </div>
+                    <button
+                      onClick={() => setShowDocCompareModal(true)}
+                      disabled={documents.length < 2}
+                      className="w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition disabled:opacity-40 flex items-center justify-center gap-1 cursor-pointer"
+                      title={documents.length < 2 ? "Cần tối thiểu 2 tài liệu để so sánh" : "So sánh đối chiếu tài liệu"}
+                    >
+                      <Scale size={12} /> So sánh đối chiếu
+                    </button>
+                  </motion.div>
+
+                  {/* Tool 8: Cấu hình đề thi */}
+                  <motion.div 
+                    whileHover={{ y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={spring.highlight}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                      isDark ? 'bg-[#181a20] border-white/10' : 'bg-slate-50 border-slate-200 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <SlidersHorizontal size={14} className="text-cyan-400 shrink-0" />
+                      <span className="font-bold text-xs truncate">Cấu Hình Đề Thi</span>
+                    </div>
+                    <button
+                      onClick={() => setShowGuideConfigModal(true)}
+                      className="w-full bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 font-semibold text-[11px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <SlidersHorizontal size={12} /> Tùy chỉnh câu hỏi
+                    </button>
+                  </motion.div>
+
+                </div>
+
+                {/* Bottom Quick Bar */}
+                <div className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
+                  isDark ? 'bg-white/[0.02] border-white/10 text-gray-400' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <span className="text-[11px]">Cẩm nang & Đề thi AI</span>
+                  <button 
+                    onClick={handleRegenerateStudyGuide}
+                    disabled={regeneratingGuide}
+                    className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 transition font-medium cursor-pointer"
+                  >
+                    <RefreshCw size={11} className={regeneratingGuide ? 'animate-spin' : ''} />
+                    <span>{regeneratingGuide ? "Đang tạo lại..." : "Làm mới tất cả"}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </motion.div>
+        )}
+
+        {/* TAB 2: CẨM NANG HỌC TẬP (READING & REFERENCE GUIDE) */}
+        {studioTab === 'guide' && (
+          <motion.div 
+            key="guide"
+            initial={{ opacity: 0, y: 6, filter: 'blur(3px)' }}
+            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, y: -6, filter: 'blur(3px)' }}
+            transition={spring.slide}
+            className="space-y-3"
+          >
+            <div className={`p-4 rounded-2xl border ${
+              isDark ? 'bg-[#181a20] border-white/10 text-white' : 'bg-slate-50 border-slate-200 text-slate-800 shadow-sm'
+            }`}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-blue-500 flex items-center gap-1.5">
+                  <BookOpen size={16} /> Cẩm Nang Học Tập
+                </h3>
+                {documents.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => setShowGuideConfigModal(true)}
+                      disabled={regeneratingGuide}
+                      className="text-[11px] bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 border border-blue-500/30 px-2 py-0.5 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                      title="Tùy chỉnh số lượng câu hỏi, flashcards và chủ đề"
+                    >
+                      <SlidersHorizontal size={11} /> Tùy chỉnh
+                    </button>
+                    <button 
+                      onClick={handleRegenerateStudyGuide}
+                      disabled={regeneratingGuide}
+                      className={`text-[11px] p-1 rounded-lg transition cursor-pointer ${
+                        isDark ? 'text-gray-400 hover:text-white hover:bg-white/5' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
+                      }`}
+                      title="Làm mới nhanh"
+                    >
+                      <RefreshCw size={12} className={regeneratingGuide ? 'animate-spin' : ''} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              {documents.length === 0 ? (
+                <div className={`text-xs py-6 text-center leading-relaxed ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>
+                  Tải lên tài liệu ở cột bên trái để AI tự động trích xuất bản tóm tắt và câu hỏi ôn tập.
+                </div>
+              ) : !studyGuide && regeneratingGuide ? (
+                <div className={`flex flex-col items-center justify-center py-8 gap-2.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                  <Loader className="animate-spin text-blue-500" size={20} />
+                  <span className="text-xs">Đang đọc & phân tích tài liệu...</span>
+                </div>
+              ) : !studyGuide ? (
+                <p className="text-xs py-6 text-center leading-relaxed opacity-70">{guideError ? 'Chưa thể tạo cẩm nang. Xem thông báo phía trên và thử lại.' : guideStatus === 'not_found' ? 'Bấm Tạo học liệu để bắt đầu.' : 'Đang kiểm tra cẩm nang...'}</p>
+              ) : (
+                <div className="space-y-3.5 text-xs">
+                  {studyGuide.summary && (
+                    <div>
+                      <h4 className={`font-semibold mb-1 ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>Tóm tắt cốt lõi:</h4>
+                      <div className={`leading-relaxed max-h-48 overflow-y-auto scrollbar-hide text-xs ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
+                        <MarkdownRenderer content={studyGuide.summary.replace(/^#+\s*(Tóm tắt|Summary)[^\n]*\n+/i, '').trim()} isDark={isDark} />
+                      </div>
+                    </div>
+                  )}
+                  {studyGuide.faq && (
+                    <div className={`pt-2 border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                      <h4 className={`font-semibold mb-1 ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>Câu hỏi thường gặp:</h4>
+                      <div className={`leading-relaxed max-h-48 overflow-y-auto scrollbar-hide text-xs ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
+                        <MarkdownRenderer content={studyGuide.faq.replace(/^#+\s*(Câu hỏi thường gặp|FAQ)[^\n]*\n+/i, '').trim()} isDark={isDark} />
+                      </div>
+                    </div>
+                  )}
+                  {studyGuide.glossary && studyGuide.glossary !== "N/A" && !studyGuide.glossary.startsWith("⚠️") && (
+                    <div className={`pt-2 border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                      <h4 className={`font-semibold mb-1 ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>Thuật ngữ cốt lõi (Glossary):</h4>
+                      <div className={`leading-relaxed max-h-40 overflow-y-auto scrollbar-hide text-xs ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
+                        <MarkdownRenderer content={studyGuide.glossary.replace(/^#+\s*(Thuật ngữ|Glossary)[^\n]*\n+/i, '').trim()} isDark={isDark} />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className={`pt-3 grid grid-cols-2 gap-2 border-t ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+                    <button 
+                      onClick={() => setShowQuiz(true)}
+                      disabled={!studyGuide.quiz || studyGuide.quiz.length === 0}
+                      className="min-w-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 border border-blue-500/30 py-2 px-2 rounded-xl transition flex items-center justify-center gap-1.5 font-semibold text-xs disabled:opacity-40 cursor-pointer"
+                    >
+                      <Brain size={14} className="shrink-0" /> 
+                      <span className="truncate">Trắc nghiệm ({studyGuide.quiz?.length || 0})</span>
+                    </button>
+                    <button 
+                      onClick={() => setShowFlashcards(true)}
+                      disabled={!studyGuide.flashcards || studyGuide.flashcards.length === 0}
+                      className="min-w-0 bg-purple-500/10 hover:bg-purple-500/20 text-purple-500 border border-purple-500/30 py-2 px-2 rounded-xl transition flex items-center justify-center gap-1.5 font-semibold text-xs disabled:opacity-40 cursor-pointer"
+                      title="Mở bộ thẻ lật 3D, game ghép thẻ và xuất Quizlet"
+                    >
+                      <Layers size={14} className="shrink-0" /> 
+                      <span className="truncate">Quizlet ({studyGuide.flashcards?.length || 0})</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+        </AnimatePresence>
+
+      </div>
+
+      <nav aria-label="Không gian sổ tay" className={`lg:hidden fixed bottom-0 inset-x-0 h-16 z-40 border-t flex items-stretch pb-[env(safe-area-inset-bottom)] ${isDark ? 'bg-[#14161a] border-white/10' : 'bg-white border-slate-200'}`}>
+        {[
+          { id: 'docs', label: 'Nguồn', icon: Layers, count: documents.length },
+          { id: 'chat', label: 'Hỏi đáp', icon: Bot },
+          { id: 'studio', label: 'Học tập', icon: BookOpen },
+        ].map(tab => <button key={tab.id} onClick={() => setMobileActiveTab(tab.id)} aria-current={mobileActiveTab === tab.id ? 'page' : undefined} className={`flex-1 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold ${mobileActiveTab === tab.id ? 'text-blue-500 bg-blue-500/10' : 'text-slate-400'}`}><tab.icon size={19} /><span>{tab.label}{tab.count ? ` (${tab.count})` : ''}</span></button>)}
+      </nav>
+
+      {showUrlInput && <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm p-4 flex items-center justify-center">
+        <form ref={urlDialogRef} role="dialog" aria-modal="true" aria-label="Thêm nguồn từ đường dẫn" tabIndex={-1} onSubmit={event => { event.preventDefault(); void handleUrlSubmit(); }} className={`w-full max-w-lg p-5 sm:p-6 border rounded-2xl space-y-4 ${isDark ? 'bg-[#181a20] border-white/15' : 'bg-white border-slate-200'}`}>
+          <div className="flex gap-3 items-center justify-between"><h2 className="font-semibold flex items-center gap-2"><LinkIcon size={18} className="text-blue-500" /> Thêm website hoặc YouTube</h2><button type="button" disabled={uploading} onClick={() => setShowUrlInput(false)} aria-label="Đóng thêm đường dẫn" className="p-2"><X size={18} /></button></div>
+          <p className="text-sm opacity-70 leading-6">Dán đường dẫn công khai. Nội dung website hoặc phụ đề YouTube sẽ được dùng làm nguồn cho sổ tay.</p>
+          <label className="block text-xs font-semibold">Đường dẫn<input autoFocus required type="url" value={urlInputValue} disabled={uploading} onChange={event => { setUrlInputValue(event.target.value); setUrlError(''); }} placeholder="https://..." className={`mt-2 w-full rounded-xl border p-3 font-normal text-sm ${isDark ? 'bg-black/20 border-white/15' : 'bg-slate-50 border-slate-300'}`} /></label>
+          {urlError && <p role="alert" className="p-3 bg-red-500/10 text-red-500 text-sm rounded-xl">{urlError}</p>}
+          <div className="flex justify-end gap-2"><button type="button" disabled={uploading} onClick={() => setShowUrlInput(false)} className="px-4 py-2.5 rounded-xl border border-current/10 text-sm">Hủy</button><button type="submit" disabled={uploading || !urlInputValue.trim()} className="px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold">{uploading ? 'Đang đọc nguồn...' : 'Thêm nguồn'}</button></div>
+        </form>
+      </div>}
+      {/* MODAL: QUIZ (Modular Component) */}
+      <QuizModal
+        isDark={isDark}
+        isOpen={showQuiz && !!studyGuide?.quiz}
+        onClose={() => setShowQuiz(false)}
+        quiz={studyGuide?.quiz || []}
+        quizAnswers={quizAnswers}
+        setQuizAnswers={setQuizAnswers}
+        quizSubmitted={quizSubmitted}
+        setQuizSubmitted={setQuizSubmitted}
+        onOpenConfig={() => setShowGuideConfigModal(true)}
+        onPrintExam={handlePrintExam}
+      />
+
+      {/* MODAL: QUIZLET SUITE (Flashcards 3D, Anki SRS, Practice Timer, Match Game, Export) */}
+      <QuizletModal
+        isOpen={showFlashcards}
+        onClose={() => setShowFlashcards(false)}
+        flashcards={studyGuide?.flashcards || []}
+        title={activeNotebook?.title || "Bộ thẻ học tập"}
+        onOpenConfig={() => setShowGuideConfigModal(true)}
+        notebookId={activeNotebook?.id}
+        isDark={isDark}
+      />
+
+      {/* MODAL: EVALUATION RESULTS (Modular Component) */}
+      <EvalModal
+        isDark={isDark}
+        isOpen={showEvalModal && !!evalResult}
+        onClose={() => setShowEvalModal(false)}
+        evalResult={evalResult}
+      />
+
+      {/* MODAL: CUSTOM STUDY GUIDE & QUIZLET CONFIG (Modular Component) */}
+      <GuideConfigModal
+        isDark={isDark}
+        isOpen={showGuideConfigModal}
+        onClose={() => setShowGuideConfigModal(false)}
+        guideConfig={guideConfig}
+        setGuideConfig={setGuideConfig}
+        onGenerate={handleGenerateCustomGuide}
+        regeneratingGuide={regeneratingGuide}
+      />
+
+      {/* MODAL: CUSTOM PODCAST CONFIG (Modular Component) */}
+      <PodcastConfigModal
+        isDark={isDark}
+        isOpen={showPodcastModal}
+        onClose={() => setShowPodcastModal(false)}
+        podcastConfig={podcastConfig}
+        setPodcastConfig={setPodcastConfig}
+        onGenerate={generatePodcast}
+        podcastGenerating={podcastGenerating}
+      />
+
+      {/* MODAL: DOCUMENT PREVIEW (Modular Component) */}
+      <DocPreviewModal
+        isDark={isDark}
+        isOpen={!!previewDoc}
+        onClose={() => setPreviewDoc(null)}
+        previewDoc={previewDoc}
+        loadingPreview={loadingPreview}
+        highlightSnippet={highlightSnippet}
+        setHighlightSnippet={setHighlightSnippet}
+        onDeleteDocument={deleteDocument}
+      />
+
+      {/* Global Settings Modal */}
+      <SettingsModal 
+        isDark={isDark}
+        isOpen={showSettings} 
+        onClose={() => {
+          setShowSettings(false);
+          fetchNotebookDetails();
+          fetchLocalModels();
+        }}
+      />
+
+      {/* Feature #8: Mindmap Modal */}
+      <MindmapModal
+        isOpen={showMindmapModal}
+        onClose={() => setShowMindmapModal(false)}
+        mindmapData={mindmapData}
+        onRegenerate={handleRegenerateMindmap}
+        loading={loadingMindmap}
+        isDark={isDark}
+      />
+
+      {/* Feature #9: Document Comparison Modal */}
+      <DocCompareModal
+        isOpen={showDocCompareModal}
+        onClose={() => setShowDocCompareModal(false)}
+        documents={documents}
+        onCompare={handleCompareDocs}
+        comparisonResult={comparisonResult}
+        comparing={comparingDocs}
+        isDark={isDark}
+      />
+
+      {/* Feature #15: Timeline & Outline Modal */}
+      <TimelineOutlineModal
+        isOpen={showTimelineModal}
+        onClose={() => setShowTimelineModal(false)}
+        data={timelineData}
+        onRegenerate={handleRegenerateTimeline}
+        loading={loadingTimeline}
+        onAskAboutTopic={(topic) => {
+          setInput(topic);
+          chatInputRef.current?.focus();
+        }}
+        isDark={isDark}
+      />
+
+      {/* Feature #14: Keyboard Shortcuts Modal */}
+      <ShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+        isDark={isDark}
+      />
+
+      {/* Feature #12: Share & Export Modal */}
+      <ShareModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        notebook={activeNotebook}
+        studyGuide={studyGuide}
+        onExportJson={handleExportNotebookJson}
+        isDark={isDark}
+      />
+
+      {/* Model Manager: Gợi ý tải cho máy, Model trên máy, Model tùy chỉnh */}
+      <ModelManagerModal
+        isDark={isDark}
+        isOpen={showModelManagerModal}
+        onClose={() => {
+          setShowModelManagerModal(false);
+          fetchNotebookDetails();
+          fetchLocalModels();
+        }}
+        activeNotebook={activeNotebook}
+        onSelectModel={handleSwitchModel}
+        initialTab={modelManagerInitialTab}
+      />
+
+      {/* MODAL: PASTE RAW TEXT (Modular Component) */}
+      <PasteTextModal
+        isDark={isDark}
+        isOpen={showPasteTextModal}
+        onClose={() => setShowPasteTextModal(false)}
+        pasteTitle={pasteTitle}
+        setPasteTitle={setPasteTitle}
+        pasteContent={pasteContent}
+        setPasteContent={setPasteContent}
+        onSubmit={handlePasteTextSubmit}
+      />
+
+      {/* Modal Xem Chunks Gốc của Tài liệu (Source Inspector Modular Component) */}
+      <SourceInspectorModal
+        isDark={isDark}
+        isOpen={!!inspectDoc}
+        onClose={() => setInspectDoc(null)}
+        inspectDoc={inspectDoc}
+        docChunks={docChunks}
+        chunkSearch={chunkSearch}
+        setChunkSearch={setChunkSearch}
+        loadingChunks={loadingChunks}
+      />
+
+      {/* Modal Phản biện AI & Kế hoạch hành động (Modular Component) */}
+      <CritiqueModal
+        isOpen={critiqueModal.isOpen}
+        onClose={() => setCritiqueModal(prev => ({ ...prev, isOpen: false }))}
+        critiqueModal={critiqueModal}
+        onPinNote={handlePinNote}
+        onShowToast={showToast}
+        isDark={isDark}
+      />
+
+      {/* Modal Pinned Notes (Bảng Ghi chú Nghiên cứu Modular Component) */}
+      <NotesModal
+        isOpen={showNotesModal}
+        onClose={() => setShowNotesModal(false)}
+        pinnedNotes={pinnedNotes}
+        newNoteTitle={newNoteTitle}
+        setNewNoteTitle={setNewNoteTitle}
+        newNoteContent={newNoteContent}
+        setNewNoteContent={setNewNoteContent}
+        onAddNote={async () => {
+          if (!newNoteContent.trim()) return;
+          setSavingNote(true);
+          const saved = await handlePinNote(newNoteContent, newNoteTitle || 'Ghi chú tự tạo', 'manual');
+          if (saved) { setNewNoteContent(''); setNewNoteTitle(''); }
+          setSavingNote(false);
+          return saved;
+        }}
+        savingNote={savingNote}
+        onDeleteNote={handleDeleteNote}
+        onSynthesizeNotes={handleSynthesizeNotes}
+        isSynthesizingNotes={isSynthesizingNotes}
+        onConvertNoteToSource={handleConvertNoteToSource}
+        convertingNoteId={convertingNoteId}
+        onShowToast={showToast}
+        isDark={isDark}
+      />
+
+      {/* System Health Diagnostics Modal */}
+      <SystemHealthModal
+        isDark={isDark}
+        isOpen={showSystemHealth}
+        onClose={() => setShowSystemHealth(false)}
+        onOpenSettings={() => setShowSettings(true)}
+        onOpenModelManager={() => setShowModelManagerModal(true)}
+      />
+
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div role="status" aria-live="polite" className="fixed bottom-20 lg:bottom-6 left-4 right-4 sm:left-auto sm:max-w-md z-[9999] flex items-start gap-3 px-4 py-3 rounded-xl bg-slate-900/95 text-white text-sm border border-white/20 shadow-2xl backdrop-blur-md animate-fade-in">
+          <span className="flex-1 break-words">{toastMsg}</span><button onClick={() => setToastMsg('')} aria-label="Đóng thông báo" className="p-1"><X size={15} /></button>
         </div>
       )}
 

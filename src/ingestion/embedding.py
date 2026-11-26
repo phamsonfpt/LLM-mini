@@ -1,36 +1,119 @@
-from typing import List
-from sentence_transformers import SentenceTransformer
-from ..utils.config import settings
+from typing import List, Union
+import hashlib
+import re
+import numpy as np
+from src.utils.logger import logger
+from src.utils.config import settings
+
 
 class LocalEmbedder:
-    """Quản lý Embedding Model với khả năng tự động chọn Device theo Hardware Profiler."""
+    """Wrapper cho SentenceTransformers hoạt động hoàn toàn Offline, đồng bộ với config.py."""
     
     def __init__(self, model_name: str = None):
-        # Ưu tiên lấy model từ tham số, nếu không thì lấy mặc định (ví dụ BAAI/bge-m3)
-        self.model_name = model_name or "BAAI/bge-m3"
-        self.device = settings.hf_device if settings.hf_device != "auto" else None
-        
-        print(f"[LocalEmbedder] Đang tải mô hình {self.model_name} lên thiết bị: {self.device}")
-        
-        # Load model using sentence-transformers
-        self.model = SentenceTransformer(self.model_name, device=self.device)
-        
-        # Nếu thiết bị là CPU và config cấu hình là int8_onnx, 
-        # (Lưu ý: sentence-transformers không hỗ trợ export onnx trực tiếp dễ dàng,
-        # Trong hệ thống thực tế, ta có thể dùng thư viện optimum để tải bản ONNX.
-        # Ở đây ta sử dụng cấu hình CPU native của PyTorch đã được tối ưu hóa).
-        if getattr(settings, "embedding_quantization", None) == "int8_onnx" and self.device == "cpu":
-            print("[LocalEmbedder] Đang tối ưu hóa chạy CPU cho môi trường Tier 3/4...")
+        self.model_name = model_name or getattr(
+            settings, "embedding_model", "sentence-transformers/all-MiniLM-L6-v2"
+        )
+        self.device = getattr(settings, "hf_device", None) if getattr(settings, "hf_device", "auto") != "auto" else None
+        self.model = None
+        self._load_model()
+
+    def _load_model(self):
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info(f"Đang tải Local Embedding Model: {self.model_name}...")
+            try:
+                self.model = SentenceTransformer(self.model_name, device=self.device, local_files_only=True)
+            except Exception:
+                if not settings.allow_model_download:
+                    raise RuntimeError(
+                        f"Embedding model '{self.model_name}' chưa có trong cache. "
+                        "Đặt RAG_ALLOW_MODEL_DOWNLOAD=true để cho phép tải model."
+                    )
+                self.model = SentenceTransformer(self.model_name, device=self.device, local_files_only=False)
+            logger.info("Tải Local Embedding Model thành công!")
+        except Exception as e:
+            fallback = "sentence-transformers/all-MiniLM-L6-v2"
+            if self.model_name != fallback:
+                logger.warning(f"Không thể tải {self.model_name} ({e}). Chuyển sang fallback: {fallback}")
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    self.model_name = fallback
+                    try:
+                        self.model = SentenceTransformer(fallback, device=self.device, local_files_only=True)
+                    except Exception:
+                        if not settings.allow_model_download:
+                            raise RuntimeError(
+                                f"Embedding fallback '{fallback}' chưa có trong cache."
+                            )
+                        self.model = SentenceTransformer(fallback, device=self.device, local_files_only=False)
+                    return
+                except Exception as inner_e:
+                    logger.error(f"Lỗi tải fallback model: {inner_e}")
+            logger.error(f"Lỗi khi tải sentence-transformers: {e}")
+            self.model = None
+
+    def embed_text(self, texts: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
+        if not self.model:
+            logger.warning("LocalEmbedder chưa khởi tạo. Dùng embedding băm ổn định offline.")
+            is_single = isinstance(texts, str)
+            return self._hash_embeddings(texts)
+
+        is_single = isinstance(texts, str)
+        input_texts = [texts] if is_single else texts
+
+        try:
+            embeddings = self.model.encode(
+                input_texts,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+            result = embeddings.tolist()
+            return result[0] if is_single else result
+        except Exception as e:
+            logger.error(f"Lỗi trong quá trình tạo Embedding: {e}")
+            return self._hash_embeddings(texts)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Nhúng danh sách các đoạn văn bản (Dùng cho Ingestion)."""
         if not texts:
             return []
-        # Chuyển thành numpy array rồi tolist() để trả về list float tiêu chuẩn
-        embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-        return embeddings.tolist()
+        res = self.embed_text(texts)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], list):
+            return res
+        return [res] if isinstance(res, list) else []
 
     def embed_query(self, text: str) -> List[float]:
         """Nhúng một câu truy vấn duy nhất (Dùng cho Retrieval)."""
-        embedding = self.model.encode(text, convert_to_numpy=True, show_progress_bar=False)
-        return embedding.tolist()
+        res = self.embed_text(text)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], float):
+            return res
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], list):
+            return res[0]
+        return [0.0] * 384
+
+    @staticmethod
+    def _hash_embeddings(texts: Union[str, List[str]], dimensions: int = 384):
+        """Create deterministic, non-zero vectors when no local model exists.
+
+        This is intentionally only a resilience fallback, not a replacement
+        for a semantic embedding model. It keeps indexing and keyword-like
+        vector search usable in an air-gapped installation instead of making
+        every document identical (the old all-zero fallback).
+        """
+        single = isinstance(texts, str)
+        values = [texts] if single else texts
+        vectors = []
+        for value in values:
+            vector = np.zeros(dimensions, dtype=np.float32)
+            tokens = re.findall(r"\w+", str(value).lower())
+            for token in tokens:
+                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+                index = int.from_bytes(digest[:4], "little") % dimensions
+                sign = 1.0 if digest[4] & 1 else -1.0
+                vector[index] += sign
+            norm = np.linalg.norm(vector)
+            if norm:
+                vector /= norm
+            vectors.append(vector.tolist())
+        return vectors[0] if single else vectors
